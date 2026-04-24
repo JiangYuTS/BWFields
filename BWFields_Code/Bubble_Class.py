@@ -2,9 +2,8 @@ import time, os, sys, contextlib
 import numpy as np
 import astropy.io.fits as fits
 from astropy.table import Table
-from skimage import measure, morphology
-from collections import defaultdict
-from tqdm import tqdm
+from skimage import measure
+
 
 # External clump & filament classes (from DPConCFil package)
 from DPConCFil.Clump_Class import *
@@ -38,7 +37,7 @@ class BubbleInfor(object):
        - Extract sub-cubes, fit ellipse, derive gas/velocity properties
     """
     def __init__(self, clumpsObj=None, parameters=None, save_files=None,
-                 save=False, pix_scale_arcmin=0.5, vel_resolution=0.167):
+                 save=False, pix_scale_arcmin=0.5, vel_resolution=0.167,ClumpNum=3):
         # External clump object produced by DPConCFil (provides cube, WCS, SRs, clump coords...)
         self.clumpsObj = clumpsObj
         # Bubble detection parameters passed to BFM.Bubble_Weight_Data_Detect_By_SR
@@ -49,6 +48,7 @@ class BubbleInfor(object):
         # Spatial/velocity resolution metadata used downstream (e.g. physical conversions)
         self.pix_scale_arcmin = pix_scale_arcmin
         self.vel_resolution = vel_resolution
+        self.ClumpNum = ClumpNum
 
     def Bubble_Morphology(self, srs_ids=None, bubble_weight_data=None, bubble_regions_data=None, 
                           bubbles_coords=None, par_FacetClumps_bub=[False]):
@@ -89,22 +89,30 @@ class BubbleInfor(object):
         if bubble_weight_data is None:
             bubble_weight_data_no_filter, bubble_weight_data, \
             bubbles_coords, morphology_times = \
-                BFM.Bubble_Weight_Data_Detect_By_SR(
-                    srs_list, origin_data, parameters)
+                            BFM.Bubble_Weight_Data_Detect_By_SR(srs_list, origin_data, parameters)
     
             # Optional refinement: use FacetClumps to adjust bubble regions (improve masks/edges)
             if par_FacetClumps_bub[0]:
                 with Suppress_Tqdm():
-                    bubble_regions_data, bubbles_coords = \
+                    bubble_regions_data, bubbles_coords, srs_array_bub, srs_list_bub = \
                         BFM.Get_Bubble_Regions_By_FacetClumps(
-                            srs_array, bubble_weight_data_no_filter,
-                            bubble_weight_data, par_FacetClumps_bub)
+                            srs_array, bubble_weight_data_no_filter,bubble_weight_data, par_FacetClumps_bub)
+            else:
+                bubble_regions_data = measure.label(bubble_weight_data > 0, connectivity=3)
+                bubbles_coords = []
+                bubble_weight_regions = measure.regionprops(bubble_regions_data)
+                for sreg in bubble_weight_regions:
+                    bubbles_coords.append(sreg.coords)
+                srs_array_bub = None
+                srs_list_bub = None
     
             # Cache intermediate products for later debugging/reuse
             self.bubble_weight_data_no_filter = bubble_weight_data_no_filter
             self.bubble_weight_data = bubble_weight_data
             self.bubbles_coords = bubbles_coords
             self.morphology_times = morphology_times
+            self.srs_array_bub = srs_array_bub
+            self.srs_list_bub = srs_list_bub
         else:
             if bubbles_coords is None:
                 bubbles_coords = []
@@ -114,10 +122,17 @@ class BubbleInfor(object):
             self.bubble_weight_data = bubble_weight_data
             self.bubbles_coords = bubbles_coords
             self.morphology_times = 0
+            self.srs_array_bub = None
+            self.srs_list_bub = None
     
-        # Stage 2: compute morphology features per bubble (center, contour, ecc, volume, confidence...)
+        # Stage 2: compute morphology features per bubble (center, contour, ecc, volume, confidence...)        
         bubble_infor, bubble_regions_data, bubble_regions = \
             BFM.Bubble_Infor_Morphology(bubble_weight_data, bubbles_coords)
+
+        if self.srs_array_bub is not None:
+            bubble_peaks = bubble_infor['bubble_peaks']
+            rc_dict_bub = Clump_Class_Funs.Build_RC_Dict_Simplified(bubble_peaks, srs_array_bub, srs_list_bub)
+            self.rc_dict_bub = rc_dict_bub
     
         # Stage 3: convert pixel-domain morphology results into WCS coordinates
         bubble_infor = BFM.Bubble_Infor_Morphology_WCS(data_wcs, bubble_infor)
@@ -288,11 +303,44 @@ class BubbleInfor(object):
             bubble_region = None
             bubble_clump_ids = bubble_infor_provided[0]  # externally provided clump ids or mapping
     
+        # Ellipse fitting: either compute from bubble contour or load from provided info
+        if bubble_infor_provided is None:
+            bubble_coms_bl = bubble_coms[index][1:] if fixed_ec else None  # ellipse center in (b,l)
+            ellipse_infor, ellipse_coords = \
+                BFM.Get_Ellipse_Coords(
+                    bubble_coms_bl, bubble_region, bubble_weight_data)
+    
+            # Convert global coords into item-local coords via start_coords offset
+            self.bubble_com_item = bubble_coms[index]
+            self.bubble_com_item_wcs = bubble_coms_wcs[index]
+            self.bubble_contour = self.contours[index]
+        else:
+            bubble_com_pi, bubble_com_wcs_pi, _, \
+            ellipse_coords, ellipse_infor = \
+                BFM.Get_Bubble_Ellipse_Infor_By_Provide(
+                    self, bubble_infor_provided)
+    
+            self.bubble_com_item = bubble_com_pi
+            self.bubble_com_item_wcs = bubble_com_wcs_pi
+            self.bubble_contour = ellipse_coords
+    
+        self.ellipse_infor = ellipse_infor     # (x0, y0, angle, a, b)
+        self.ellipse_coords = ellipse_coords   # ellipse sample points in item coords
+        self.ellipse_infor_cav = ellipse_infor   
+        self.ellipse_coords_cav = ellipse_coords 
+    
         # Find clumps associated with this bubble (and optionally connected clumps)
         bubble_clump_ids, bubble_clump_ids_con = \
             BFM.Get_Bubble_Clump_Ids(
-                bubble_region, clump_centers, regions_data,
+                self, bubble_region, clump_centers, regions_data,
                 connected_ids_dict, bubble_clump_ids)
+    
+        if skeleton_ellipse_infor is not None:
+            ellipse_infor = skeleton_ellipse_infor
+            ellipse_coords = skeleton_coords_ellipse
+    
+        self.ellipse_infor = ellipse_infor     # (x0, y0, angle, a, b) 
+        self.ellipse_coords = ellipse_coords   # ellipse sample points in item coords
     
         self.bubble_clump_ids = bubble_clump_ids
         self.bubble_clump_ids_con = bubble_clump_ids_con
@@ -313,35 +361,12 @@ class BubbleInfor(object):
             FCFA.Filament_Coords(origin_data, regions_data, data_wcs,
                 clump_coords_dict, clump_ids, CalSub)
     
-        # Ellipse fitting: either compute from bubble contour or load from provided info
-        if bubble_infor_provided is None:
-            bubble_coms_bl = bubble_coms[index][1:] if fixed_ec else None  # ellipse center in (b,l)
-            ellipse_infor, ellipse_coords = \
-                BFM.Get_Ellipse_Coords(
-                    bubble_coms_bl, bubble_region, bubble_weight_data)
-    
-            # Convert global coords into item-local coords via start_coords offset
-            self.bubble_com_item = bubble_coms[index] - start_coords
-            self.bubble_com_item_wcs = bubble_coms_wcs[index]
-            self.bubble_contour = self.contours[index] - start_coords[1:]
-        else:
-            bubble_com_pi, bubble_com_wcs_pi, _, \
-            ellipse_coords, ellipse_infor = \
-                BFM.Get_Bubble_Ellipse_Infor_By_Provide(
-                    self, bubble_infor_provided)
-    
-            self.bubble_com_item = bubble_com_pi - start_coords
-            self.bubble_com_item_wcs = bubble_com_wcs_pi
-            self.bubble_contour = ellipse_coords - start_coords[1:]
-        if skeleton_ellipse_infor is not None:
-            ellipse_infor = skeleton_ellipse_infor
-            ellipse_coords = skeleton_coords_ellipse
-        self.ellipse_infor = ellipse_infor     # (x0, y0, angle, a, b) or similar
-        self.ellipse_coords = ellipse_coords   # ellipse sample points in item coords
+        self.bubble_com_item = self.bubble_com_item - start_coords
+        self.bubble_contour = self.bubble_contour - start_coords[1:]
     
         # Gas/kinematic info extraction + coordinate ordering cleanup
-        BFM.Get_Bubble_Gas_Infor(self, add_con, index, systemic_v_type)
-        BFM.Resort_Ellipse_Coords(self,ellipse_start_type)
+        BFM.Get_Bubble_Gas_Infor(self, index, systemic_v_type)
+        BFM.Resort_Ellipse_Coords(self, add_con, ellipse_start_type)
     
         # Optionally use only half ellipse points
         ellipse_coords = self.ellipse_coords
@@ -376,8 +401,7 @@ class BubbleInfor(object):
         self.lbv_item_end = lbv_item_end
         self.velocity_axis = velocity_axis
         self.pixel_scale = pixel_scale
-        
-            
+                    
 
     def Bubble_Detect(parameters, save_files, file_path):
         """One-shot bubble detection pipeline from a FITS cube path.

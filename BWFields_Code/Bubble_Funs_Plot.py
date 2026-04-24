@@ -1,5 +1,3 @@
-import time
-import random
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle,Rectangle,Ellipse
@@ -7,7 +5,6 @@ import matplotlib.colors as mcolors
 import colorsys
 from astropy import units as u
 import copy
-import colorsys
 
 from DPConCFil import Filament_Class_Funs_Analysis as FCFA 
 from . import Bubble_Funs_Morphology as BFM
@@ -122,8 +119,8 @@ def Plot_Clumps_Infor_By_Ids(clumpsObj,clump_ids,ax0=None,figsize=(16,14),plot_c
         plt.rcParams['ytick.direction'] = 'in'
         plt.rcParams['xtick.color'] = 'green'
         plt.rcParams['ytick.color'] = 'green'
-        plt.xlabel("Galactic Longitude",fontsize=fontsize)
-        plt.ylabel("Galactic Latitude",fontsize=fontsize)
+        ax0.set_xlabel("Galactic Longitude",fontsize=fontsize)
+        ax0.set_ylabel("Galactic Latitude",fontsize=fontsize)
         ax0.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
         ax0.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
         lon = ax0.coords[0]
@@ -143,8 +140,7 @@ def Plot_Clumps_Infor_By_Ids(clumpsObj,clump_ids,ax0=None,figsize=(16,14),plot_c
             cen_x2 = center_x - line_scale*np.sin(np.deg2rad(clump_angles[index]))
             cen_y2 = center_y - line_scale*np.cos(np.deg2rad(clump_angles[index]))
             if clump_edges[index] == 0:
-                lines = plt.plot([cen_y1,center_y,cen_y2],[cen_x1,center_x,cen_x2])
-                plt.setp(lines[0], linewidth=linewidth,color = colors[k],marker='.',markersize=3)
+                ax0.plot([cen_y1,cen_y2],[cen_x1,cen_x2],linewidth=linewidth,color = colors[k],marker='.',markersize=3)
             ax0.plot(center_y,center_x,color=colors[k],marker='*',markersize = 6)
             if num_text==True:
                 ax0.text(center_y,center_x,"{}".format(index),color=colors[k],fontsize=fontsize-2)
@@ -173,7 +169,7 @@ def Plot_Clumps_Infor_By_Ids(clumpsObj,clump_ids,ax0=None,figsize=(16,14),plot_c
     return filament_item,start_coords,ax0
 
 
-def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,bubble_valid_ids=None,plot_contour=True,num_text=True,\
+def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,clump_ids=None,bubble_valid_ids=None,plot_contour=True,num_text=True,\
                cmap='gray',ax0=None,figsize=(5,4),tick_logic=True,cbar_logic=True,linewidth=2,markersize=2,fontsize=12,spacing=None):
     
     data_wcs = bubbleObj.clumpsObj.data_wcs
@@ -182,7 +178,14 @@ def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,bubble_valid_ids=None,plot_co
     origin_data = bubbleObj.clumpsObj.origin_data
     regions_data = bubbleObj.clumpsObj.regions_data
     clumps_data = np.zeros_like(origin_data)
-    clumps_data[regions_data>0] = origin_data[regions_data>0]
+
+    if clump_ids is None:
+        clump_ids = np.arange(len(bubbleObj.clumpsObj.clump_coords_dict))
+    for i in clump_ids:
+        clump_coords = (bubbleObj.clumpsObj.clump_coords_dict[i][:, 0], bubbleObj.clumpsObj.clump_coords_dict[i][:, 1], \
+                        bubbleObj.clumpsObj.clump_coords_dict[i][:, 2])
+        clumps_data[clump_coords] = bubbleObj.clumpsObj.origin_data[clump_coords]
+
     bubble_weight_data = bubbleObj.bubble_weight_data
     bubble_regions_data = bubbleObj.bubble_regions_data
 
@@ -220,14 +223,14 @@ def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,bubble_valid_ids=None,plot_co
             for i in range(len(bubble_coms)):
                 ax0.plot(bubble_coms[i][2],bubble_coms[i][1],color=colors_T[i],marker='o',markersize=markersize)
                 if num_text==True:
-                    ax0.text(bubble_coms[i][2],bubble_coms[i][1],"{}".format(i+1),color='r',fontsize=fontsize-2)
+                    ax0.text(bubble_coms[i][2],bubble_coms[i][1],"{}".format(i),color='r',fontsize=fontsize-2)
         else:
             for i in bubble_valid_ids:
                 ax0.plot(contours[i][:,1],contours[i][:,0],color=colors_T[i],linewidth=linewidth)
             for i in bubble_valid_ids:
                 ax0.plot(bubble_coms[i][2],bubble_coms[i][1],color=colors_T[i],marker='o',markersize=markersize)
                 if num_text==True:
-                    ax0.text(bubble_coms[i][2],bubble_coms[i][1],"{}".format(i+1),color='r',fontsize=fontsize-2)
+                    ax0.text(bubble_coms[i][2],bubble_coms[i][1],"{}".format(i),color='r',fontsize=fontsize-2)
                     
     if bg_data == 1:
         show_data = clumps_data.sum(0)*bubbleObj.vel_resolution
@@ -258,7 +261,7 @@ def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,bubble_valid_ids=None,plot_co
         cbar.set_label(label=cbar_name,fontsize=fontsize)
     
     return ax0
-
+    
 
 def Plot_Bubble_Inner_Data(bubbleObj,index=0,text_title='B',cmap='hot',fontsize=12):
     bubble_inner_data_item = bubbleObj.bubble_inner_data_item 
@@ -1029,6 +1032,10 @@ def Plot_Bubble_Item(bubbleObj,line_index=0,ax0=None,figsize=(8,6),line_logics=[
         end = dictionary_cuts_item['plot_cuts'][line_index][1]
         ax0.plot([start[0], end[0]], [start[1], end[1]], color='red',label=label_l,linestyle='-.', markersize=8., \
                  linewidth=1.2, alpha=0.6)
+
+        start_annotate = start + 0.99 * (end - start)
+        ax0.annotate('', xy=end, xytext=start_annotate, arrowprops=dict(facecolor='red', edgecolor='red', arrowstyle='->', lw=1.2))
+
     else:
         start = dictionary_cuts_item['plot_cuts'][line_index][0]
         end = dictionary_cuts_item['plot_cuts'][line_index][1]
@@ -1136,13 +1143,12 @@ def Plot_Profile_Fit(bubbleObj,color_1='lime',color_2='cyan',ax0=None,figsize=(6
         local_fit = False
         intensity_threshold = None
     
-    
     # Plot full data in light gray if local fit was used
     # if local_fit and len(x_full) != len(x):
     #     plt.plot(x_full, y_full, 'o-', color='lightgray', markersize=2, alpha=0.5, label='Full Data (Not Fitted)')
     
     # Original fitted data - with customizable style options
-    plt.plot(x, y_orig, 'ro-', label='Fitted Profile Points', markersize=4, alpha=0.7, linewidth=1.5)
+    ax0.plot(x, y_orig, 'ro-', label='Fitted Profile Points', markersize=4, alpha=0.7, linewidth=1.5)
 
     if fit_results['success']:
         # Fitted curve (extended over full range for visualization)
@@ -1174,23 +1180,23 @@ def Plot_Profile_Fit(bubbleObj,color_1='lime',color_2='cyan',ax0=None,figsize=(6
         fwhm2 = 2.355 * p['sigma2']
         bubble_thickness = (fwhm1 + fwhm2) / 2
         half_height1 = p['A1']/2 + p['baseline']
-        plt.annotate('', xy=(p['mu1'] - fwhm1/2, half_height1), xytext=(p['mu1'] + fwhm1/2, half_height1),
+        ax0.annotate('', xy=(p['mu1'] - fwhm1/2, half_height1), xytext=(p['mu1'] + fwhm1/2, half_height1),
                     arrowprops=dict(arrowstyle='<->', shrinkA=0, shrinkB=0, color=color_1, lw=1))
         ax0.plot((p['mu1'] - fwhm1/2, p['mu1'] + fwhm1/2), (half_height1, half_height1),\
                  color=color_1, linestyle='-', linewidth=1.5, label=f'FWHM$_1$: {fwhm1*pix_scale_arcmin:.2f}')
         
         half_height2 = p['A2']/2 + p['baseline']
-        plt.annotate('', xy=(p['mu2'] - fwhm2/2, half_height2), xytext=(p['mu2'] + fwhm2/2, half_height2),
+        ax0.annotate('', xy=(p['mu2'] - fwhm2/2, half_height2), xytext=(p['mu2'] + fwhm2/2, half_height2),
                     arrowprops=dict(arrowstyle='<->', shrinkA=0, shrinkB=0, color=color_2, lw=1))
         ax0.plot((p['mu2'] - fwhm2/2, p['mu2'] + fwhm2/2), (half_height2, half_height2),\
                  color=color_2, linestyle='-', linewidth=1.5, label=f'FWHM$_2$: {fwhm2*pix_scale_arcmin:.2f}')
         
-        plt.annotate('', xy=(p['mu2'], p['baseline']), xytext=(p['mu1'], p['baseline']),
+        ax0.annotate('', xy=(p['mu2'], p['baseline']), xytext=(p['mu1'], p['baseline']),
                     arrowprops=dict(arrowstyle='<->', shrinkA=0, shrinkB=0,color='green', lw=1))
         ax0.plot((p['mu2'], p['mu1']), (p['baseline'], p['baseline']),\
                  color='green', linestyle='-', linewidth=1.5, label=f'Baseline&Diameter: {bubble_diameter*pix_scale_arcmin:.2f}')
     
-        plt.annotate('', xy=(p['mu2']+bubble_thickness/2, p['baseline']-p['baseline']/6), \
+        ax0.annotate('', xy=(p['mu2']+bubble_thickness/2, p['baseline']-p['baseline']/6), \
                      xytext=(p['mu1']-bubble_thickness/2, p['baseline']-p['baseline']/6),
                      arrowprops=dict(arrowstyle='<->', shrinkA=0, shrinkB=0,color='orange', lw=1))
         ax0.plot((p['mu2']+bubble_thickness/2, p['mu1']-bubble_thickness/2), \
@@ -1201,7 +1207,7 @@ def Plot_Profile_Fit(bubbleObj,color_1='lime',color_2='cyan',ax0=None,figsize=(6
     # plt.axvline(x=p['mu2'], color='orange', linewidth=2, alpha=0.8)
     ax0.axvline(0, color='b', linestyle='dashed',alpha=0.3,label='Axis of Symmetry')
 
-    ax0.text(0.8, 0.2, r'S$_{{\text{{sym}}}}$: {}'.format(np.around(fit_results['symmetry_score'],2)), 
+    ax0.text(0.8, 0.2, r'S$_{{\rm sym}}$: {}'.format(np.around(fit_results['symmetry_score'],2)), 
                 transform=ax0.transAxes, verticalalignment='top', fontsize=fontsize-2,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
@@ -1209,17 +1215,17 @@ def Plot_Profile_Fit(bubbleObj,color_1='lime',color_2='cyan',ax0=None,figsize=(6
     mean_profile_right_coords = np.where(bubbleObj.mean_profile_right>0)[0]
     max_len = np.max([mean_profile_left_coords[-1],\
                       mean_profile_right_coords[-1]]) + 5
-    plt.xlim(-max_len,max_len)
-    fig.tight_layout()
+    ax0.set_xlim(-max_len,max_len)
+    # fig.tight_layout()
     plt.tick_params(axis='both', which='major', labelsize=fontsize)
     ticks = ax0.get_xticks()*pix_scale_arcmin
     ax0.set_xticklabels(np.int32(np.around(ticks)))
     
-    plt.xlabel("Radial Distance (arcmin)",fontsize=fontsize)
-    plt.ylabel(r"Integrated Intensity (K)",fontsize=fontsize)
+    ax0.set_xlabel("Radial Distance (arcmin)",fontsize=fontsize)
+    ax0.set_ylabel(r"Integrated Intensity (K)",fontsize=fontsize)
     plt.rcParams['xtick.color'] = 'black'
     plt.rcParams['ytick.color'] = 'black'
-    plt.legend(fontsize=fontsize-4,loc='upper right')
+    ax0.legend(fontsize=fontsize-4,loc='upper right')
     return ax0
 
 
@@ -1284,7 +1290,7 @@ def Plot_Slice_Line_Coords(bubbleObj,line_coords_index,add_con=False,plot_clump=
         ax0.text(bubble_item.shape[2]/20,bubble_item.shape[1]-bubble_item.shape[1]/15,r'Com = [{}, {}, {}]'.\
              format(bubble_com_item_wcs[0],bubble_com_item_wcs[1],bubble_com_item_wcs[2]),color='blue',fontsize=12)
     plt.tick_params(axis='both', which='major', labelsize=fontsize)
-    plt.legend(fontsize=fontsize,loc='upper right')
+    ax0.legend(fontsize=fontsize,loc='upper right')
     return ax0
 
 
@@ -1333,7 +1339,7 @@ def Plot_Bubble_PV_Slice(bubbleObj,ax0=None,figsize=(6,4),fontsize=12):
                     color='blue', linestyle='--', linewidth=1.5, label='Intensity Diameter',zorder=2)
 
     ax0.set_xlabel('Offset from Bubble Com (arcmin)', fontsize=fontsize)
-    ax0.set_ylabel(r'V$_\text{LSR}$ (km s$^{-1}$)', fontsize=fontsize)
+    ax0.set_ylabel(r'$V_{\rm LSR}$ (km s$^{-1}$)', fontsize=fontsize)
     plt.rcParams['xtick.color'] = 'black'
     plt.rcParams['ytick.color'] = 'black'
 
@@ -1344,93 +1350,6 @@ def Plot_Bubble_PV_Slice(bubbleObj,ax0=None,figsize=(6,4),fontsize=12):
     cbar.set_label('Intensity (K)', fontsize=fontsize)
     cbar.ax.tick_params(axis='y', colors='black', labelsize=fontsize)
     # plt.tight_layout()
-    
-    return ax0
-
-
-def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,bubble_valid_ids=None,plot_contour=True,num_text=True,\
-               cmap='gray',ax0=None,figsize=(5,4),tick_logic=True,cbar_logic=True,linewidth=2,markersize=2,fontsize=12,spacing=None):
-    
-    data_wcs = bubbleObj.clumpsObj.data_wcs
-    contours = bubbleObj.contours
-    bubble_coms = bubbleObj.bubble_coms
-    origin_data = bubbleObj.clumpsObj.origin_data
-    regions_data = bubbleObj.clumpsObj.regions_data
-    clumps_data = np.zeros_like(origin_data)
-    clumps_data[regions_data>0] = origin_data[regions_data>0]
-    bubble_weight_data = bubbleObj.bubble_weight_data
-    bubble_regions_data = bubbleObj.bubble_regions_data
-
-    if ax0 is None and tick_logic:
-        fig = plt.figure(figsize=figsize)
-        ax0 = fig.add_subplot(111,projection=data_wcs.celestial)
-    else:
-        fig, (ax0) = plt.subplots(1,1,figsize=figsize)
-        ax0.set_xticks([]), ax0.set_yticks([])
-    if tick_logic:
-        plt.rcParams['xtick.direction'] = 'in'
-        plt.rcParams['ytick.direction'] = 'in'
-        plt.rcParams['xtick.color'] = 'green'
-        plt.rcParams['ytick.color'] = 'green'
-        plt.xlabel("Galactic Longitude",fontsize=fontsize)
-        plt.ylabel("Galactic Latitude",fontsize=fontsize)
-        ax0.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
-        ax0.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
-        lon = ax0.coords[0]
-        lat = ax0.coords[1]
-        lon.set_major_formatter("d.d")
-        lat.set_major_formatter("d.d")
-        if spacing != None:
-            lon.set_ticks(spacing=spacing)
-            lat.set_ticks(spacing=spacing)
-        ax0.tick_params(axis='both', which='major', labelsize=fontsize)
-
-    if plot_contour:
-        colors_T = Distinct_Dark_Colors(len(bubble_coms))
-        np.random.seed(0)
-        colors_T = np.random.permutation(colors_T)
-        if bubble_valid_ids is None:
-            for i in range(len(contours)):
-                ax0.plot(contours[i][:,1],contours[i][:,0],color=colors_T[i],linewidth=linewidth)
-            for i in range(len(bubble_coms)):
-                ax0.plot(bubble_coms[i][2],bubble_coms[i][1],color=colors_T[i],marker='o',markersize=markersize)
-                if num_text==True:
-                    ax0.text(bubble_coms[i][2],bubble_coms[i][1],"{}".format(i+1),color='r',fontsize=fontsize-2)
-        else:
-            for i in bubble_valid_ids:
-                ax0.plot(contours[i][:,1],contours[i][:,0],color=colors_T[i],linewidth=linewidth)
-            for i in bubble_valid_ids:
-                ax0.plot(bubble_coms[i][2],bubble_coms[i][1],color=colors_T[i],marker='o',markersize=markersize)
-                if num_text==True:
-                    ax0.text(bubble_coms[i][2],bubble_coms[i][1],"{}".format(i+1),color='r',fontsize=fontsize-2)
-                    
-    if bg_data == 1:
-        show_data = clumps_data.sum(0)*bubbleObj.vel_resolution
-        cbar_name = 'K km s$^{-1}$'
-    elif bg_data == 2:
-        show_data = bubble_weight_data*(bubble_regions_data>0)
-        show_data = show_data.sum(0)
-        show_data[show_data != 0] = np.sqrt(show_data[show_data != 0])
-        cbar_name = ''
-        ax0.text(0.85, 0.1, r'$\sqrt{W_{l,b,v}}$', 
-                transform=ax0.transAxes, verticalalignment='top', fontsize=fontsize-2,
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    vmin = np.min(show_data[show_data != 0])
-    vmax = np.nanpercentile(show_data[np.where(show_data != 0)], 99.5)
-    
-    gci = ax0.imshow(show_data,
-               origin='lower',
-               cmap=cmap,
-               interpolation='none',
-               norm=mcolors.Normalize(vmin=vmin, vmax=vmax))
-    ax0.contourf(show_data,
-                 levels=[0., .0001],
-                 colors='w')
-    if cbar_logic:
-        cbar=plt.colorbar(gci,pad=0)
-        cbar.ax.tick_params(labelsize=fontsize) 
-        cbar.set_label(label=cbar_name,fontsize=fontsize)
     
     return ax0
 
@@ -1485,7 +1404,7 @@ def Plot_Radial_Velocity_Profile(bubbleObj,fontsize=12,ax0=None,figsize=(6,4)):
     ax0.scatter(0,central_v,color='black',marker='x',s=50, alpha=1, \
                label=f'Central V: {central_v:.2f} '+'km s$^{-1}$',zorder=3)
     ax0.set_xlabel('Offset from Bubble Com (arcmin)', fontsize=fontsize)
-    ax0.set_ylabel(r'V$_\text{LSR}$ (km s$^{-1}$)', fontsize=fontsize)
+    ax0.set_ylabel(r'$V_{\rm LSR}$ (km s$^{-1}$)', fontsize=fontsize)
     plt.rcParams['xtick.color'] = 'black'
     plt.rcParams['ytick.color'] = 'black'
     ax0.legend(fontsize=fontsize-4,loc='upper right')
@@ -1580,8 +1499,7 @@ def Plot_Radial_Velocity_Profile_Mean(bubbleObj, fontsize=12, ax0=None, figsize=
 
     ax0.text(
         0.5, 0.25, 
-        rf"S$_{{\text{{exp}}}}$(light black)={bubbleObj.exp_results['light black']['S_exp']:.2f}, "
-        rf"{bubbleObj.exp_signs_light_black_str[0]}",
+        r'S$_{\rm exp}$(light black)=' + f"{bubbleObj.exp_results['light black']['S_exp']:.2f}, {bubbleObj.exp_signs_light_black_str[0]}",
         transform=ax0.transAxes, ha='center', va='center', color='white',
         bbox=dict(boxstyle='round', facecolor='black', alpha=0.5),fontsize=fontsize - 3)
 
@@ -1596,13 +1514,13 @@ def Plot_Radial_Velocity_Profile_Mean(bubbleObj, fontsize=12, ax0=None, figsize=
     colors = ["black", "red", "blue"]
     color_name = colors[bubbleObj.max_Sexp_index]
     ax0.text(0.5, 0.05,
-            rf"S$_{{\text{{exp}}}}$({color_name})={bubbleObj.max_Sexp:.2f}",
-            transform=ax0.transAxes, ha='center', va='center',
-            bbox=dict(boxstyle='round', facecolor='green', alpha=0.5),
-            fontsize=fontsize-3)
+         r'S$_{\rm exp}$' + f'({color_name})={bubbleObj.max_Sexp:.2f}',
+         transform=ax0.transAxes, ha='center', va='center',
+         bbox=dict(boxstyle='round', facecolor='green', alpha=0.5),
+         fontsize=fontsize-3)
 
     ax0.set_xlabel('Offset from Bubble Com (arcmin)', fontsize=fontsize)
-    ax0.set_ylabel(r'V$_\text{LSR}$ (km s$^{-1}$)', fontsize=fontsize)
+    ax0.set_ylabel(r'$V_{\rm LSR}$ (km s$^{-1}$)', fontsize=fontsize)
     ax0.legend(fontsize=fontsize-4, loc='upper right')
     ax0.grid(True, alpha=0.3)
     ax0.tick_params(axis='both', which='major', labelsize=fontsize)
@@ -1659,7 +1577,7 @@ def Plot_Radial_Velocity_Model_Fitting(bubbleObj,fontsize=12,ax0=None,figsize=(6
                 color_idx += 1
     
     ax0.set_xlabel('Position (arcmin)', fontsize=fontsize)
-    ax0.set_ylabel(r'V$_\text{LSR}$ (km s$^{-1}$)', fontsize=fontsize)
+    ax0.set_ylabel(r'$V_{\rm LSR}$ (km s$^{-1}$)', fontsize=fontsize)
     # ax.set_title('Model Fitting', fontsize=fontsize, fontweight='bold')
     ax0.legend(fontsize=fontsize-2)
     ax0.grid(True, alpha=0.3)
@@ -1902,7 +1820,7 @@ def Plot_Unwrap_Bubble_Infor(bubbleObj,add_con=False,plot_clump=False,plot_ellip
         ax0.text(0.05, 0.81, r'Gas V Range = ({}$\sim${}) km s$^{{-1}}$'.format(bubble_gas_ranges_lbv_min[2],bubble_gas_ranges_lbv_max[2]),\
                              color='green',transform=ax0.transAxes, verticalalignment='top', fontsize=10)
                 
-    plt.legend(loc='upper right',labelcolor='black',fontsize=fontsize-2)
+    ax0.legend(loc='upper right',labelcolor='black',fontsize=fontsize-2)
     return ax0
 
 
@@ -1913,22 +1831,13 @@ def Plot_Ellipse_Width_Region(ax, ellipse_x0, ellipse_y0, ellipse_angle, semi_ma
     cos_rot = np.cos(ellipse_angle)
     sin_rot = np.sin(ellipse_angle)
     t = np.linspace(0, 2*np.pi, n_samples, endpoint=True)
-    
-    # ---------------------- 1. 椭圆中心线坐标（全局） ----------------------
-    # 椭圆局部坐标（中心在原点，未旋转）
     x_local = semi_major * np.cos(t)
     y_local = semi_minor * np.sin(t)
-    
-    # 转换到全局坐标（中心+旋转）
     x_ellipse = ellipse_x0 + cos_rot * x_local - sin_rot * y_local
     y_ellipse = ellipse_y0 + sin_rot * x_local + cos_rot * y_local
-    
-    # ---------------------- 2. 阴影区域内外边界计算 ----------------------
-    # 椭圆切向量（局部）
     dx_dt = -semi_major * np.sin(t)
     dy_dt = semi_minor * np.cos(t)
     tangent_len = np.sqrt(dx_dt**2 + dy_dt**2)
-    # 法向量（局部，向外）
     nx_l_outer = dy_dt / tangent_len
     ny_l_outer = -dx_dt / tangent_len
 
@@ -2008,52 +1917,30 @@ def Plot_Unwrapped_Bub_Data(bubbleObj,fontsize=12,ax0=None,figsize=(15,2)):
     return ax0
 
 
-def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, img_name='N19-1',save=True, save_folder='../Images', show=False):
+def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, figsize=(14,10), img_name='N19-1',
+                                                            save=True, save_folder='../Images', show=False):
     print(img_name)
 
-    # ===== 1) 创建画布 + 三个子图（ax0 带 WCS 投影）=====
-    fig = plt.figure(figsize=(20, 6), constrained_layout=True)
+    # ===== 1) Build fig =====
+    fig = plt.figure(figsize=figsize, constrained_layout=True)
+    ax0 = fig.add_subplot(2, 2, 1, projection=bubbleObj.data_wcs_item.celestial)
+    ax1 = fig.add_subplot(2, 2, 2)
+    ax2 = fig.add_subplot(2, 2, 3)
+    ax3 = fig.add_subplot(2, 2, 4)
 
-    # 第一个：WCS projection
-    ax0 = fig.add_subplot(1, 3, 1, projection=bubbleObj.data_wcs_item.celestial)
-    ax1 = fig.add_subplot(1, 3, 2)
-    ax2 = fig.add_subplot(1, 3, 3)
-
-    # ===== 2) (c) Radial Velocity Profile =====
-    ax2.tick_params(axis='both', colors='black')
-    Plot_Radial_Velocity_Profile_Mean(bubbleObj, ax0=ax2)
-    ax2.text(0.05, 0.95, '(c)', color='black', transform=ax2.transAxes,
-             va='top', fontsize=20)
-
-    # ===== 3) (b) PV Slice =====
-    line_index = bubbleObj.exp_central_delta_v_arg_max
-    BFPV.Cal_Radial_Velocity_Profile(bubbleObj, line_index, width=2)
-
-    Plot_Bubble_PV_Slice(bubbleObj, ax0=ax1)
-    leg1 = ax1.legend(loc='upper right', fontsize=fontsize-2)
-    legend_style = [('green', 1.0), ('blue', 0.5)]
-    for text, (color, alpha) in zip(leg1.get_texts(), legend_style):
-        text.set_color(color)
-        text.set_alpha(alpha)
-
-    ax1.text(0.05, 0.95, '(b)', color='black', transform=ax1.transAxes,
-             va='top', fontsize=20)
-
-    # ===== 4) (a) Unwrap Bubble (WCS) =====
+    # ===== 2) (a) Unwrap Bubble (WCS) =====
     ax0.tick_params(axis='both', colors='green')
-
     Plot_Unwrap_Bubble_Infor(
         bubbleObj,
         add_con=True, plot_clump=True, plot_ellipse=False, plot_contour=False,
         plot_circles=[False, False], plot_annotate=False, plot_skeleton=False,
         plot_skeleton_ellipse=True, tick_logic=True, cbar_logic=True, text_com=True,
-        skeleton_types=['scatter', 'line'], linewidth=1.5, fontsize=12, ax0=ax0
+        skeleton_types=['scatter', 'line'], linewidth=1.5, fontsize=12, ax0=ax0, figsize=(6, 4)
     )
-
+    line_index = bubbleObj.exp_central_delta_v_arg_max
     dictionary_cuts_item = copy.deepcopy(bubbleObj.dictionary_cuts)
     start = dictionary_cuts_item['plot_cuts'][line_index][0]
     end   = dictionary_cuts_item['plot_cuts'][line_index][1]
-
     ax0.plot([start[0], end[0]], [start[1], end[1]],
              color='red', label="PV Slice",
              linestyle='-', markersize=8., linewidth=1.2, alpha=0.6)
@@ -2068,6 +1955,33 @@ def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, img_name='N19-1',s
     tag = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else img_name
     ax0.text(0.05, 0.95, f'(a) {tag}', color='black',
              transform=ax0.transAxes, va='top', fontsize=20)
+
+    # ===== 3) (b) Intensity Profile =====
+    ax1.tick_params(axis='both', colors='black')
+    ax1 = Plot_Profile_Fit(bubbleObj, ax0=ax1, figsize=(6, 4))
+    ax1.text(0.05, 0.95, '(b)', color='black', transform=ax1.transAxes,
+             va='top', fontsize=20)
+    ax1.legend(loc='upper right', fontsize=fontsize-2)
+
+    # ===== 4) (c) PV Slice =====
+    ax2.tick_params(axis='both', colors='black')
+    BFPV.Cal_Radial_Velocity_Profile(bubbleObj, line_index, width=2)
+
+    Plot_Bubble_PV_Slice(bubbleObj, ax0=ax2, figsize=(6, 4))
+    leg1 = ax2.legend(loc='upper right', fontsize=fontsize-2)
+    legend_style = [('green', 1.0), ('blue', 0.8), ('blue', 0.8)]
+    for text, (color, alpha) in zip(leg1.get_texts(), legend_style):
+        text.set_color(color)
+        text.set_alpha(alpha)
+
+    ax2.text(0.05, 0.95, '(c)', color='black', transform=ax2.transAxes,
+             va='top', fontsize=20)
+
+    # ===== 5) (d) Radial Velocity Profile =====
+    ax3.tick_params(axis='both', colors='black')
+    Plot_Radial_Velocity_Profile_Mean(bubbleObj, ax0=ax3, figsize=(6, 4))
+    ax3.text(0.05, 0.95, '(d)', color='black', transform=ax3.transAxes,
+             va='top', fontsize=20)
 
     if save and save_folder:
         save_path_pdf = f"{save_folder}/Combined_Plot_{img_name}.pdf"

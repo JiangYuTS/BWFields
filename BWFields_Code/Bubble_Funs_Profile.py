@@ -1,14 +1,9 @@
-import time
 import numpy as np
 import copy
-from skimage import filters, measure, morphology
-from scipy import optimize, linalg
+from skimage import measure
 import scipy.ndimage as ndimage
-from scipy.interpolate import splprep, splev, RegularGridInterpolator
-import networkx as nx
-from collections import defaultdict
-from pvextractor import Path, extract_pv_slice
-from scipy.signal import find_peaks
+from scipy.interpolate import RegularGridInterpolator
+from scipy.signal import find_peaks, savgol_filter
 from scipy.optimize import curve_fit
 
 
@@ -277,7 +272,6 @@ def Cal_Dictionary_Cuts(regions_data, related_ids_T, connected_ids_dict, clump_c
         points_updated = points.copy().tolist()
         fprime_updated = fprime.copy().tolist()
         dictionary_cuts['empty_logic'] = False
-        
         for point_id in range(len(points)):
             image_shape = image.shape
 
@@ -307,7 +301,7 @@ def Cal_Dictionary_Cuts(regions_data, related_ids_T, connected_ids_dict, clump_c
                     # Drop points that are empty
                     points_updated.remove(points[point_id].tolist())
                     fprime_updated.remove(fprime[point_id].tolist())
-                    dictionary_cuts['empty_logic'] = True
+                    
 
             else:
                 # Drop points that are too close to boundary
@@ -318,7 +312,8 @@ def Cal_Dictionary_Cuts(regions_data, related_ids_T, connected_ids_dict, clump_c
         dictionary_cuts['points'].append(np.array(points_updated))
         dictionary_cuts['fprime'].append(np.array(fprime_updated))
         dictionary_cuts['points_b'] = [points_b]
-
+    if len(points_updated) == 0:
+        dictionary_cuts['empty_logic'] = True
     return dictionary_cuts
 
 
@@ -487,10 +482,13 @@ def Estimate_Initial_Params(x, y):
         Candidate peak indices on each side.
     """
     baseline = np.mean([np.mean(y[:5]), np.mean(y[-5:])])
-    y_corrected = y - baseline
+    y_corrected = y# - baseline
 
-    # Detect peaks above 50% of maximum corrected signal; distance enforces separation
-    peaks, properties = find_peaks(y_corrected, height=np.max(y_corrected) * 0.5, distance=6)
+    # Detect peaks above 80% of maximum corrected signal; distance enforces separation
+    y_smooth = savgol_filter(y_corrected, window_length=5, polyorder=3)  
+    peaks_left, properties_left = find_peaks(y_smooth[x < 0], height=np.max(y_smooth[x < 0]) * 0.5, distance=6)
+    peaks_right, properties_right = find_peaks(y_smooth[x > 0], height=np.max(y_smooth[x > 0]) * 0.5, distance=6)
+    peaks = np.r_[peaks_left,np.array(peaks_right)+len(np.where(x < 0)[0])+1]
 
     # Split peaks by side
     left_peaks = peaks[x[peaks] < -1]
@@ -514,9 +512,9 @@ def Estimate_Initial_Params(x, y):
 
     # Initialize amplitudes/centers
     A1 = y_corrected[peak1_idx]
-    mu1 = x[peak1_idx]
+    mu1 = np.min([x[peak1_idx],-2])
     A2 = y_corrected[peak2_idx]
-    mu2 = x[peak2_idx]
+    mu2 = np.max([x[peak2_idx],2])
 
     # Initial sigma: quarter of peak separation (heuristic)
     sigma = abs(mu2 - mu1) / 4
@@ -555,76 +553,82 @@ def Find_Valley_Between_Peaks(x, y, peak1_idx, peak2_idx):
 
 
 def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
-                        left_constraint_width=2.0, right_constraint_width=2.0, bounds_per=3,
+                        left_constraint_width=6.0, right_constraint_width=6.0, bounds_per=2,
                         local_fit=False, intensity_threshold=None):
     """
-    Fit a constrained double-Gaussian to ``bubbleObj.mean_profile``.
+    Fit a constrained double-Gaussian model to the mean radial profile.
+
+    The profile is modeled as the sum of two Gaussian components plus a constant
+    baseline. The fitting is designed for approximately symmetric double-peak
+    structures, such as shell-like or cavity-like intensity profiles.
+
+    Two initialization modes are supported:
+    1. ``ref_ellipse='cavity'``:
+       detect the two main peaks directly from the current profile and build
+       the initial guess from them.
+    2. ``ref_ellipse='skeleton'``:
+       use the previous cavity fit as a prior and restrict the parameter search
+       range around the previous solution.
+
+    Optionally, the fit can be restricted to the main high-intensity region
+    around the two peaks, which helps reduce contamination from weak outer wings
+    or unrelated structures.
 
     Parameters
     ----------
     bubbleObj : object
-        Object containing the profile to fit. It must provide:
-        - ``axis_coords``  : x coordinates of the profile
-        - ``mean_profile`` : y values of the profile
-        If ``ref_ellipse='skeleton'``, it must also contain
-        ``bubbleObj.fit_results['params']`` from a previous fit.
-
+        Object containing the profile to fit. It must provide
+        ``axis_coords`` and ``mean_profile``. In ``'skeleton'`` mode,
+        ``bubbleObj.fit_results_cav`` is also required as the reference fit.
     ref_ellipse : {'cavity', 'skeleton'}, optional
-        Controls how the fit is initialized.
-        - 'cavity'   : detect peaks directly from the current profile
-        - 'skeleton' : use parameters from a previous fit as prior and
-          restrict the new fit around them
-
+        Reference mode used to initialize the fit.
     left_constraint_width : float, optional
-        Allowed offset of the left Gaussian center (mu1) from the detected
+        Allowed search range of the left Gaussian center around the detected
         left peak position.
-
     right_constraint_width : float, optional
-        Allowed offset of the right Gaussian center (mu2) from the detected
+        Allowed search range of the right Gaussian center around the detected
         right peak position.
-
     bounds_per : float, optional
-        Only used when ``ref_ellipse='skeleton'``. The new parameter bounds are
-        set to ``initial_params ± initial_params / bounds_per``.
-        Larger values give tighter bounds.
-
+        Scaling factor used in ``'skeleton'`` mode to shrink the parameter bounds
+        around the previous fit. Larger values produce tighter bounds.
     local_fit : bool, optional
-        If True, fit only the main high-intensity region near the two peaks
-        instead of the full profile.
-
+        If True, only the main high-intensity region around the two peaks is used
+        in the fit.
     intensity_threshold : float or None, optional
-        Threshold used when ``local_fit=True``.
-        - If None, it is estimated from the valley between the two main peaks.
-        - If given, it is used directly to define the fitting region.
+        Threshold used to define the local fitting region. If None, it is estimated
+        from the valley intensity between the two main peaks.
 
     Returns
     -------
     results : dict
-        Dictionary containing fit parameters, uncertainties, fit quality,
-        symmetry score, and the fitted profile. The same result is also saved
-        to ``bubbleObj.fit_results``.
+        Dictionary containing the fitted parameters, parameter uncertainties,
+        fitting quality, symmetry score, and fitted profile. The same dictionary
+        is also stored in ``bubbleObj.fit_results``.
     """
+
     x_full = np.array(bubbleObj.axis_coords)
     y_full = np.array(bubbleObj.mean_profile)
 
-    # Remove invalid samples before peak detection and fitting
+    # Remove invalid samples before peak detection and nonlinear fitting
     valid_mask = ~(np.isnan(x_full) | np.isnan(y_full))
     x_full, y_full = x_full[valid_mask], y_full[valid_mask]
 
     if len(x_full) < 7:
         raise ValueError("Insufficient data points for double Gaussian fit")
 
-    # Detect the two main peaks and build initial parameters from the full profile
+    # Estimate the two dominant peaks and build the initial parameter set
     initial_params, peak1_idx, peak2_idx, left_peaks, right_peaks = \
         Estimate_Initial_Params(x_full, y_full)
 
     mu1_detected = x_full[peak1_idx]
     mu2_detected = x_full[peak2_idx]
-
-    # Optional local fit: keep only the main high-intensity region around the peaks
+    mu1 = mu1_detected
+    mu2 = mu2_detected
+    
+    # Restrict the fit to the main high-intensity structure if requested
     if local_fit:
         if intensity_threshold is None:
-            # Estimate threshold from the valley between the two main peaks
+            # Use the valley between the two main peaks to define a local threshold
             valley_intensity, valley_idx = Find_Valley_Between_Peaks(
                 x_full, y_full, peak1_idx, peak2_idx
             )
@@ -635,11 +639,11 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
         threshold_mask = y_full >= intensity_threshold
         threshold_label = measure.label(threshold_mask, connectivity=1)
 
-        # Keep the connected component containing the main peak pair
+        # Keep only the connected component associated with the main peak pair
         if threshold_mask[valley_idx]:
             threshold_mask[np.where(threshold_label != threshold_label[valley_idx])] = False
 
-        # If one side has multiple peaks, trim away remote components
+        # Remove remote high-intensity components if multiple peaks appear on one side
         if len(left_peaks) > 1:
             valley_intensity, valley_idx = Find_Valley_Between_Peaks(
                 x_full, y_full, left_peaks[-1], left_peaks[-2]
@@ -654,16 +658,18 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
         x = x_full[threshold_mask]
         y = y_full[threshold_mask]
 
-        # Fall back to the full profile if too few points remain
-        if len(x) < 7:
-            print(f"Warning: Only {len(x)} points above threshold. Using full dataset.")
+        # Fall back to the full profile if the local region is too small
+        # or does not preserve both sides of the double-peak structure
+        if len(x) < 7 or len(np.where(x < 0)[0]) < 4 or len(np.where(x > 0)[0]) < 4:
+            print(f"Warning: Only {len(x)} points above threshold or no double peaks. Using full dataset.")
             x, y = x_full, y_full
             local_fit = False
+    
     else:
         x, y = x_full, y_full
         intensity_threshold = None
 
-    # Rebuild initial parameters if fitting only a local subset
+    # Rebuild the initial guess from the local subset when fitting is restricted
     if local_fit and len(x) != len(x_full):
         left_peaks = np.where((x < 0) & (y >= intensity_threshold))[0]
         right_peaks = np.where((x > 0) & (y >= intensity_threshold))[0]
@@ -673,76 +679,90 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
 
         baseline = intensity_threshold * 0.9
         A1 = y[peak1_idx_local] - baseline
-        mu1 = x[peak1_idx_local]
+        mu1 = np.min([x[peak1_idx_local], -3])
         A2 = y[peak2_idx_local] - baseline
-        mu2 = x[peak2_idx_local]
+        mu2 = np.max([x[peak2_idx_local], 3])
         sigma = abs(mu2 - mu1) / 4
         initial_params = [A1, mu1, sigma, A2, mu2, sigma, baseline]
 
-    # Parameter bounds for [A1, mu1, sigma1, A2, mu2, sigma2, baseline]
+    # Bounds for [A1, mu1, sigma1, A2, mu2, sigma2, baseline]
+    # The two centers are constrained near the detected peaks, while widths and
+    # baseline are limited to physically reasonable ranges
     lower_bounds = [
         0,
-        max(mu1_detected - left_constraint_width, np.min(x)),
-        0.1,
+        max(mu1 - left_constraint_width, np.min(x)),
+        initial_params[2] / 2,
         0,
-        max(mu2_detected - right_constraint_width, 0.1),
-        0.1,
-        0 if not local_fit else intensity_threshold * 0.5
-    ]
+        mu2 - right_constraint_width,
+        initial_params[5] / 2,
+        0 if not local_fit else intensity_threshold * 0.5]
 
     upper_bounds = [
         np.inf,
-        min(mu1_detected + left_constraint_width, -0.1),
-        abs(mu2_detected - mu1_detected),
+        mu1 + left_constraint_width,
+        abs(mu2 - mu1),
         np.inf,
-        min(mu2_detected + right_constraint_width, np.max(x)),
-        abs(mu2_detected - mu1_detected),
-        np.max(y)
-    ]
+        min([mu2 + right_constraint_width, np.max(x) + 1]),
+        abs(mu2 - mu1),
+        np.max(y)]
     
-    # Skeleton mode: use a previous fit as prior and shrink the search range
+    # Prevent excessively small widths and enforce left/right peak ordering
+    lower_bounds[2] = min(initial_params[2], 1)
+    lower_bounds[5] = min(initial_params[5], 1)
+    lower_bounds[4] = max(lower_bounds[4], 2)
+    upper_bounds[1] = min(upper_bounds[1], -2)
+    
+    # In skeleton mode, reuse the cavity fit as prior information and narrow
+    # the search range around the previous best-fit parameters
     if ref_ellipse == 'skeleton':
-        if bubbleObj.fit_results['success']:
+        if bubbleObj.fit_results_cav['success']:
             initial_params = np.array([
-                bubbleObj.fit_results['params'][k]
+                bubbleObj.fit_results_cav['params'][k]
                 for k in ['A1', 'mu1', 'sigma1', 'A2', 'mu2', 'sigma2', 'baseline']
             ])
             lower_bounds = initial_params - initial_params / bounds_per
             upper_bounds = initial_params + initial_params / bounds_per
     
-            # Keep mu1 on the left side after updating bounds
+            # Keep the left peak on the negative-x side after bound reassignment
             mu1 = lower_bounds[1]
             lower_bounds[1] = upper_bounds[1]
             upper_bounds[1] = mu1
-
+            
+        # Apply additional lower/upper limits to avoid degenerate narrow peaks
+        # and to preserve the left-right separation of the two components
+        lower_bounds[2] = min(initial_params[2], 0.99)
+        lower_bounds[5] = min(initial_params[5], 0.99)
+        lower_bounds[4] = max(lower_bounds[4], 1.99)
+        upper_bounds[1] = min(upper_bounds[1], -1.99)
+            
     try:
-        # Constrained nonlinear fit
+        # Perform the constrained nonlinear least-squares fit
         popt, pcov = curve_fit(
             Double_Gaussian, x, y,
             p0=initial_params,
             bounds=(lower_bounds, upper_bounds),
-            maxfev=10000
-        )
+            maxfev=10000)
 
-        # Standard fit-quality metrics
+        # Evaluate the fit using standard residual-based statistics
         y_pred = Double_Gaussian(x, *popt)
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         r_squared = 1 - (ss_res / ss_tot)
         param_errors = np.sqrt(np.diag(pcov))
 
-        # Symmetry metrics for peak height, position, and width
+        # Quantify symmetry in peak height, peak location, and width
         symmetry_index_peak_value = np.around(
-            1 - np.abs((np.abs(popt[0]) - np.abs(popt[3]))) / (np.abs(popt[0]) + np.abs(popt[3])),3)
+            1 - np.abs((np.abs(popt[0]) - np.abs(popt[3]))) / (np.abs(popt[0]) + np.abs(popt[3])), 3)
         symmetry_index_peak_position = np.around(
-            1 - np.abs((np.abs(popt[1]) - np.abs(popt[4]))) / (np.abs(popt[1]) + np.abs(popt[4])),3)
+            1 - np.abs((np.abs(popt[1]) - np.abs(popt[4]))) / (np.abs(popt[1]) + np.abs(popt[4])), 3)
         symmetry_index_fwhm = np.around(
-            1 - np.abs((np.abs(popt[2]) - np.abs(popt[5]))) / (np.abs(popt[2]) + np.abs(popt[5])),3)
+            1 - np.abs((np.abs(popt[2]) - np.abs(popt[5]))) / (np.abs(popt[2]) + np.abs(popt[5])), 3)
         symmetry_score = np.around(
-            np.mean([symmetry_index_peak_value, symmetry_index_peak_position, symmetry_index_fwhm]),3)
+            np.mean([symmetry_index_peak_value, symmetry_index_peak_position, symmetry_index_fwhm]), 3)
 
         results = {
             'success': True,
+            'initial_params': initial_params,
             'params': dict(zip(['A1', 'mu1', 'sigma1', 'A2', 'mu2', 'sigma2', 'baseline'], popt)),
             'errors': dict(zip(['A1_err', 'mu1_err', 'sigma1_err', 'A2_err', 'mu2_err', 'sigma2_err', 'baseline_err'], param_errors)),
             'r_squared': r_squared,
@@ -756,9 +776,12 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
             'y_fitted': y_pred,
             'x_full': x_full,
             'y_full': y_full,
-            'symmetry_score': symmetry_score
-        }
+            'symmetry_score': symmetry_score}
 
+        if ref_ellipse == 'cavity':
+            bubbleObj.fit_results_cav = results
+        elif ref_ellipse == 'skeleton':
+            bubbleObj.fit_results_sk = results
         bubbleObj.fit_results = results
         return results
 
@@ -766,6 +789,7 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
         print(f"Fitting failed: {str(e)}")
         bubbleObj.fit_results = {
             'success': False,
+            'initial_params': initial_params,
             'local_fit': False,
             'error': str(e),
             'intensity_threshold': intensity_threshold,
@@ -773,8 +797,7 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
             'y_original': y,
             'x_full': x_full,
             'y_full': y_full,
-            'symmetry_score': 0
-        }
+            'symmetry_score': 0}
         return {'success': False, 'error': str(e)}
         
 
@@ -906,6 +929,11 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
         - fit_results : output of the double-Gaussian fit
         - ellipse_infor : ellipse parameters, where indices [3] and [4]
           correspond to the semi-major and semi-minor axes
+    ref_ellipse : {'cavity', 'skeleton'}, optional
+        Controls how the fit is initialized.
+        - 'cavity'   : detect peaks directly from the current profile
+        - 'skeleton' : use parameters from a previous fit as prior and
+          restrict the new fit around them
     SymScore : float, optional
         Minimum symmetry score required for accepting the fitted profile-based
         radius/thickness estimate.
@@ -931,6 +959,9 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
     pix_scale_arcmin = bubbleObj.pix_scale_arcmin
     fit_results = bubbleObj.fit_results
 
+    if ref_ellipse=='skeleton':
+        fit_results = bubbleObj.fit_results_sk
+
     # Distance used for optional angular-to-physical conversion.
     # If the caller provides a new distance, also store it back into bubbleObj.
     distance_pc = 0
@@ -948,7 +979,7 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
     # the current implementation uses the semi-major axis as a conservative
     # shell-size proxy.
     # ellipse_equivalent_r = np.sqrt(ellipse_ra * ellipse_rb)
-    ellipse_equivalent_r = ellipse_ra
+    # ellipse_equivalent_r = ellipse_ra
 
     # ------------------------------------------------------------------
     # Branch 1: use profile-fit results when the fit is successful and
@@ -962,7 +993,7 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
     else:
         logic = False
         # print('ref_ellipse = cavity or skeleton')
-        
+
     if fit_results['success'] and logic:
         p = fit_results['params']
         e = fit_results['errors']
@@ -997,12 +1028,12 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
         # - the shell is excessively thick compared with the radius,
         # - the formal uncertainties exceed the estimated values,
         # - or the shell thickness falls below the imposed minimum.
-        if bubble_outer_radius < ellipse_equivalent_r or thickness_to_radius_ratio > 2 or \
-           radius_error > bubble_radius or thickness_error > bubble_thickness or \
-           np.around(bubble_thickness) < thickness_min:
+        if (bubble_outer_radius < ellipse_rb or thickness_to_radius_ratio > 2 or \
+                   radius_error > bubble_radius or thickness_error > bubble_thickness or \
+                   np.around(bubble_thickness) < thickness_min) and ref_ellipse == 'cavity':
 
             # Fallback to geometry-based estimates.
-            bubble_radius = np.max([ellipse_equivalent_r, thickness_min])
+            bubble_radius = np.max([ellipse_ra, thickness_min, bubble_radius])
 
             # Negative errors are used here as status flags rather than
             # statistical uncertainties:
@@ -1010,9 +1041,9 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
             radius_error = -1
 
             # Empirical outer-radius proxy used in fallback mode.
-            bubble_outer_radius = 3 / 2 * ellipse_equivalent_r
+            bubble_outer_radius = 3 / 2 * bubble_radius
 
-            bubble_thickness = np.max([ellipse_equivalent_r, thickness_min])
+            bubble_thickness = np.max([thickness_min, bubble_radius])
             thickness_error = -1
             thickness_to_radius_ratio = bubble_thickness / bubble_radius
 
@@ -1023,14 +1054,14 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
     # Branch 2: fit failed or symmetry is too poor; directly use fallback.
     # ------------------------------------------------------------------
     else :
-        bubble_radius = np.max([ellipse_equivalent_r, thickness_min])
-
+        initial_params = fit_results['initial_params']
+        mu_mean = np.min([abs(initial_params[1]),abs(initial_params[4])])
+        bubble_radius = np.max([ellipse_ra, thickness_min,mu_mean])
         # -2 means "no trustworthy fit-based estimate was available".
         radius_error = -2
-
-        bubble_outer_radius = 3 / 2 * ellipse_equivalent_r
-        bubble_thickness = np.max([ellipse_equivalent_r, thickness_min])
+        bubble_thickness = np.max([thickness_min, bubble_radius])
         thickness_error = -2
+        bubble_outer_radius = 3 / 2 * bubble_radius
         thickness_to_radius_ratio = bubble_thickness / bubble_radius
 
         # Type 3 = direct fallback because fit was invalid or too asymmetric.
@@ -1064,16 +1095,18 @@ def Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=0.5, thickness_mi
             'radius_error_pc': radius_error_pc,
             'thickness_pc': thickness_pc,
             'thickness_error_pc': thickness_error_pc,
-            'diameter_pc': radius_pc * 2
-        })
+            'diameter_pc': radius_pc * 2})
 
     # Save results back to the bubble object for later reuse.
     bubbleObj.bubble_params_RFWHM = bubble_params
     bubbleObj.bubble_outer_radius = bubble_outer_radius
+    if ref_ellipse=='cavity':
+        bubbleObj.bubble_params_RFWHM_cav = bubble_params
+        bubbleObj.bubble_outer_radius_cav = bubble_outer_radius
+    elif ref_ellipse == 'skeleton':
+        bubbleObj.bubble_params_RFWHM_sk = bubble_params
+        bubbleObj.bubble_outer_radius_sk = bubble_outer_radius
     return bubble_params
-
-
-
 
 
 

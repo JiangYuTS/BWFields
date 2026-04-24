@@ -1,22 +1,11 @@
 import time
 import numpy as np
 
-import matplotlib.pyplot as plt
 from matplotlib.path import Path
-import matplotlib.colors as colors
-import astropy.io.fits as fits
-import astropy.wcs as WCS
 from astropy import units as u
-from astropy.table import Table
 from skimage import filters, measure, morphology
 import scipy.ndimage as ndimage
-from scipy.stats import multivariate_normal
 from scipy.optimize import least_squares
-from scipy import optimize, linalg
-from scipy.interpolate import splprep, splev, RegularGridInterpolator
-from scipy.special import ellipe 
-import networkx as nx
-from collections import defaultdict
 from tqdm import tqdm
 import warnings
 
@@ -231,73 +220,145 @@ def Fit_Ellipse_Algebraic(points, center=None):
     return coords_fit, ellipse_infor
 
 
-def Fit_Ellipse_Geometric(points, center, initial_guess=None):
+def Fit_Ellipse_Geometric(points, center=None, initial_guess=None,
+                                 axis_ratio_min=0.2, axis_scale_max=1.2,
+                                 return_params_only=False):
     """
-    Geometric ellipse fitting with fixed center by minimizing implicit ellipse residuals.
+    Stable geometric ellipse fitting with optional fixed center.
 
     Residual for each point:
         (x_rot/a)^2 + (y_rot/b)^2 - 1
 
+    Improvements over the original version
+    --------------------------------------
+    1) Add bounds on a, b, theta to prevent degenerate solutions.
+    2) Use 'trf' solver because 'lm' does not support bounds.
+    3) Use data-driven initialization.
+    4) Force a >= b and normalize theta into [-pi/2, pi/2].
+
     Parameters
     ----------
-    points : (N,2) array
-        Input contour points (x,y).
-    center : tuple
-        Fixed center (xc,yc). If None, uses mean of points.
+    points : (N,2) ndarray
+        Input contour/skeleton points (x, y).
+    center : tuple or None
+        Fixed ellipse center (xc, yc). If None, uses mean of points.
     initial_guess : list or None
-        [a, b, theta] initial guess.
+        Initial guess [a, b, theta].
+    axis_ratio_min : float
+        Minimum allowed b/a ratio. Helps avoid very thin degenerate ellipses.
+    axis_scale_max : float
+        Maximum allowed semi-axis relative to data span.
+        Example: 1.2 means axes cannot exceed 1.2 * max(data_span).
+    return_params_only : bool
+        If True, return only ellipse_infor and None.
 
     Returns
     -------
     ellipse_infor : list
-        Ellipse info returned by helper (usually [xc, yc, angle, a, b]).
-    coords_fit : np.ndarray
-        Ellipse contour points returned by helper.
+        [xc, yc, theta, a, b]
+    coords_fit : ndarray or None
+        Fitted ellipse coordinates if BFTools.Generate_Ellipse_Points exists,
+        otherwise None.
     """
+    points = np.asarray(points, dtype=float)
+
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("points must be an (N,2) array")
+
+    if len(points) < 5:
+        raise ValueError("At least 5 points are required to fit an ellipse")
+
+    # Fixed center: use mean if not provided
     if center is None:
         center = np.mean(points, axis=0)
+    center = np.asarray(center, dtype=float)
 
-    # Heuristic initialization based on RMS radius
+    # Shift points to local coordinates
+    x = points[:, 0] - center[0]
+    y = points[:, 1] - center[1]
+
+    # Estimate data scale
+    x_span = np.ptp(x)   # max-min
+    y_span = np.ptp(y)
+    max_span = max(x_span, y_span, 1e-6)
+
+    # Sensible bounds for semi-axes
+    a_min = max(0.5, 0.10 * max_span)
+    a_max = max(2.0, axis_scale_max * max_span)
+
+    b_min = max(0.5, axis_ratio_min * a_min)
+    b_max = max(2.0, axis_scale_max * max_span)
+
+    # Data-driven initial guess
     if initial_guess is None:
-        x = points[:, 0] - center[0]
-        y = points[:, 1] - center[1]
-        a = np.sqrt(np.mean(x ** 2 + y ** 2)) * 1.2
-        initial_guess = [a, a * 0.7, 0.0]
+        cov = np.cov(np.c_[x, y].T)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        order = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+
+        # Rough axis estimate from variance
+        a0 = np.sqrt(max(eigvals[0], 1e-6)) * 2.0
+        b0 = np.sqrt(max(eigvals[1], 1e-6)) * 2.0
+
+        # Clamp into bounds
+        a0 = np.clip(a0, a_min, a_max)
+        b0 = np.clip(b0, b_min, min(b_max, a0))
+
+        theta0 = np.arctan2(eigvecs[1, 0], eigvecs[0, 0])
+        initial_guess = [a0, b0, theta0]
 
     def residuals(params):
-        # params are the ellipse shape parameters to optimize
         a, b, theta = params
         cos_t, sin_t = np.cos(theta), np.sin(theta)
 
-        # Shift points to center, then rotate
-        x = points[:, 0] - center[0]
-        y = points[:, 1] - center[1]
+        # Rotate points into ellipse frame
         x_rot = cos_t * x + sin_t * y
         y_rot = -sin_t * x + cos_t * y
 
-        # Implicit ellipse equation residual
-        return (x_rot / a) ** 2 + (y_rot / b) ** 2 - 1
+        # Implicit ellipse residual
+        res = (x_rot / a) ** 2 + (y_rot / b) ** 2 - 1.0
 
-    # Levenberg–Marquardt (lm) is fast for small parameter problems; requires m>=n typically
-    result = least_squares(residuals, initial_guess, method='lm')
+        # Mild regularization against extreme axis separation
+        # This is soft, not mandatory, and mainly helps stability.
+        reg = 0.01 * np.log(a / b)
+        return np.r_[res, reg]
+
+    # Bounds: enforce positive axes and restrict theta
+    lower_bounds = [a_min, b_min, -np.pi-0.1]
+    upper_bounds = [a_max, b_max,  np.pi+0.1]
+
+    result = least_squares(
+        residuals,
+        x0=initial_guess,
+        bounds=(lower_bounds, upper_bounds),
+        method='trf',
+        loss='soft_l1')
+
     a, b, theta = result.x
 
-    # Enforce positivity and a>=b
-    a = np.abs(a)
-    b = np.abs(b)
+    # Ensure a >= b
     if a < b:
         a, b = b, a
         theta += np.pi / 2
-        
-    theta = theta % (2 * np.pi) 
-    if theta > np.pi/2 and theta <= 3*np.pi/2:
-        theta = theta - np.pi
-    elif theta > 3*np.pi/2:
-        theta = theta - 2*np.pi
-    theta = max(min(theta, np.pi/2), -np.pi/2)
-    
-    # Generate ellipse points (project helper)
-    coords_fit, ellipse_infor = BFTools.Generate_Ellipse_Points(a, b, theta, center)
+
+    # Normalize theta to [-pi/2, pi/2]
+    theta = theta % (2 * np.pi)
+    if theta > np.pi / 2 and theta <= 3 * np.pi / 2:
+        theta -= np.pi
+    elif theta > 3 * np.pi / 2:
+        theta -= 2 * np.pi
+    theta = np.clip(theta, -np.pi / 2, np.pi / 2)
+
+    ellipse_infor = [center[0], center[1], theta, a, b]
+
+    coords_fit = None
+    if not return_params_only:
+        try:
+            coords_fit, ellipse_infor = BFTools.Generate_Ellipse_Points(a, b, theta, center)
+        except Exception:
+            coords_fit = None
+
     return ellipse_infor, coords_fit
 
 
@@ -331,20 +392,22 @@ def Get_Ellipse_Coords(bubble_com_bl, bubble_region, bubble_weight_data):
     # Voxel coordinates for this bubble
     coords_i = bubble_region.coords
 
-    # Build 2D mask over (b,l) plane (shape: [B, L])
-    contour_data = np.zeros((bubble_weight_data.shape[1], bubble_weight_data.shape[2]), dtype='uint16')
-    contour_data[coords_i[:, 1], coords_i[:, 2]] = 1
+    # # Build 2D mask over (b,l) plane (shape: [B, L])
+    # contour_data = np.zeros((bubble_weight_data.shape[1], bubble_weight_data.shape[2]), dtype='uint16')
+    # contour_data[coords_i[:, 1], coords_i[:, 2]] = 1
 
-    # Slight morphology to smooth boundary before contouring
-    contour_data = morphology.dilation(contour_data, morphology.disk(1))
-    contour_data = morphology.erosion(contour_data, morphology.disk(1))
+    # # Slight morphology to smooth boundary before contouring
+    # contour_data = morphology.dilation(contour_data, morphology.disk(1))
+    # contour_data = morphology.erosion(contour_data, morphology.disk(1))
 
-    # Extract contours; concatenate all contour segments
-    contour = measure.find_contours(contour_data, 0.5)
-    contour_temp = []
-    for i in range(len(contour)):
-        contour_temp += list(contour[i])
-    contour = np.array(contour_temp)
+    # # Extract contours; concatenate all contour segments
+    # contour = measure.find_contours(contour_data, 0.5)
+    # contour_temp = []
+    # for i in range(len(contour)):
+    #     contour_temp += list(contour[i])
+    # contour = np.array(contour_temp)
+    
+    _, _, _, contour, _ = Cal_2D_Region_From_3D_Coords(coords_i, cal_contours=True)
 
     # Try ellipse fitting with fixed center first
     try:
@@ -357,8 +420,8 @@ def Get_Ellipse_Coords(bubble_com_bl, bubble_region, bubble_weight_data):
     except Exception as e:
         warnings.warn(f"Fitting with fixed center failed: {str(e)}, trying automatic center calculation")
 
-        # Fallback: use contour mean as center (note: original code uses contour[0]; kept as-is)
-        bubble_com_bl = np.mean(contour[0], axis=0)
+        # Fallback: use contour mean as center (note: original code uses contour; kept as-is)
+        bubble_com_bl = np.mean(contour, axis=0)
         ellipse_infor, ellipse_coords = Fit_Ellipse_Geometric(contour, center=bubble_com_bl, initial_guess=None)
 
     # Optional sampling (currently unused in return)
@@ -986,7 +1049,7 @@ def Get_Bubble_Regions_By_FacetClumps(srs_array, bubble_weight_data_no_filter, b
         bubble_weight_data, srs_array, clump_mask_array,
         srs_array_bub, srs_list_bub, bubble_peaks, bubble_coms, MergeArea
     )
-    return bubble_regions_data, bubbles_coords_record
+    return bubble_regions_data, bubbles_coords_record, srs_array_bub, srs_list_bub
 
 
 def Update_Bubble_Regions_Data(bubble_weight_data, srs_array, bubble_regions_data,
@@ -1141,6 +1204,7 @@ def Bubble_Infor_Morphology(bubble_weight_data, bubbles_coords_record):
         regionprops list over bubble_regions_data.
     """
     bubble_coms = []
+    bubble_peaks = []
     radius_lb = []
     areas_lb = []
     eccentricities_lb = []
@@ -1166,14 +1230,18 @@ def Bubble_Infor_Morphology(bubble_weight_data, bubbles_coords_record):
             coords_i, cal_contours=True
         )
 
+        
+
         # Weight-mass (use bubble weights as "mass")
         od_mass = bubble_weight_data[coords_i[:, 0], coords_i[:, 1], coords_i[:, 2]]
         mass_array = np.c_[od_mass, od_mass, od_mass]
 
         # 3D center-of-mass in (v,b,l)
         bubble_com = np.around((mass_array * np.c_[coords_i[:, 0], coords_i[:, 1], coords_i[:, 2]]).sum(0) / od_mass.sum(), 3).tolist()
-
         bubble_coms.append(bubble_com)
+
+        bubble_peaks.append(coords_i[np.where(od_mass==od_mass.max())][0])
+        
         radius_lb.append(box_region.equivalent_diameter / 2)  # 2D equivalent radius
         areas_lb.append(box_region.area)
         eccentricities_lb.append(np.around(box_region.eccentricity, 2))
@@ -1195,6 +1263,7 @@ def Bubble_Infor_Morphology(bubble_weight_data, bubbles_coords_record):
     bubble_regions = measure.regionprops(bubble_regions_data)
 
     bubble_infor['bubble_coms'] = bubble_coms
+    bubble_infor['bubble_peaks'] = bubble_peaks
     bubble_infor['radius_lb'] = radius_lb
     bubble_infor['areas_lb'] = areas_lb
     bubble_infor['eccentricities_lb'] = eccentricities_lb
@@ -1264,7 +1333,6 @@ def Bubble_Infor_Morphology_WCS(data_wcs, bubble_infor):
         bubble_infor['ranges_v_wcs'] = np.around(bubble_vs_wcs, 3)
 
     return bubble_infor
-
 
 
 def Cal_Max_Sub_Region_Coords(coords, extend_len=1, dilation_r=None):
@@ -1356,70 +1424,333 @@ def Cal_Max_Sub_Region_Coords(coords, extend_len=1, dilation_r=None):
     return coords_range, box_region_max, max_sub_coords, max_sub_coords_dilation
 
 
-def Get_Bubble_Clump_Ids(bubble_region, clump_centers, regions_data, connected_ids_dict,
-                         bubble_clump_ids=None, dilation_r=1):
+def Clump_Item_By_Coords(real_data, clump_coords):
     """
-    Determine which clumps (from a clump label cube) are associated with a given bubble region.
+    Extract a centered cubic sub-volume containing the given clump voxels.
 
     Strategy
     --------
-    If bubble_clump_ids is not provided:
-      1) Start from bubble_region.coords (bubble voxels),
-      2) Extract the largest connected sub-region (with padding and optional dilation),
-      3) Map those voxels into regions_data to get the set of clump labels,
-      4) If too few clumps are found, increase dilation and try again.
+    - Compute the bounding box of the clump coords.
+    - Allocate a cubic array with side length = max extent + padding.
+    - Place the clump voxels into the center of the cube.
+    - Return the local cube and the global-to-local offset.
+
+    Parameters
+    ----------
+    real_data : 3D ndarray
+        Original data cube.
+    clump_coords : (N,3) ndarray
+        Clump voxel coordinates [v,b,l].
+
+    Returns
+    -------
+    clump_item : 3D ndarray
+        Centered local cube containing clump values.
+    start_coords : list
+        Offset for mapping: global_coord - start_coords = local_coord.
+    """
+    # Convert coords into separate arrays
+    clump_coords = (clump_coords[:, 0], clump_coords[:, 1], clump_coords[:, 2])
+    core_x, core_y, core_z = clump_coords
+
+    # Bounding box
+    x_min, x_max = core_x.min(), core_x.max()
+    y_min, y_max = core_y.min(), core_y.max()
+    z_min, z_max = core_z.min(), core_z.max()
+
+    # Cube size (ensure minimum size)
+    length = np.max([x_max - x_min, y_max - y_min, z_max - z_min]) + 5
+    wish_len = 10
+    if length < wish_len:
+        length = wish_len + 5
+
+    # Allocate cube
+    clump_item = np.zeros([length, length, length])
+
+    # Centering offsets
+    start_x = np.int64((length - (x_max - x_min)) / 2)
+    start_y = np.int64((length - (y_max - y_min)) / 2)
+    start_z = np.int64((length - (z_max - z_min)) / 2)
+
+    # Fill values into centered cube
+    clump_item[
+        core_x - x_min + start_x,
+        core_y - y_min + start_y,
+        core_z - z_min + start_z
+    ] = real_data[core_x, core_y, core_z]
+
+    # Offset to map back to global coords
+    start_coords = [x_min - start_x, y_min - start_y, z_min - start_z]
+
+    return clump_item, start_coords
+
+
+def Cal_Ellipse_Coords_Values(bubbleObj, regions_data, bubble_clump_ids, dilation_r=1):
+    """
+    Evaluate whether a fitted ellipse is supported by clump regions.
+
+    Strategy
+    --------
+    - Merge voxel coords of all clumps in `bubble_clump_ids`.
+    - Extract a centered local cube using `Clump_Item_By_Coords`.
+    - Project ellipse coords into the local (b,l) plane.
+    - Build a binary mask of clump coverage (collapsed along v-axis).
+    - Apply a small dilation to allow tolerance near boundaries.
+    - Sample mask values along the ellipse to check coverage.
+
+    Parameters
+    ----------
+    bubbleObj : object
+        Must contain:
+          - ellipse_coords : (N,2) array in (b,l)
+          - clumpsObj.clump_coords_dict
+    regions_data : 3D ndarray
+        Clump label cube.
+    bubble_clump_ids : array-like
+        Clump ids (1-based).
+
+    Returns
+    -------
+    clump_region_item : 3D ndarray
+        Local cube containing clump labels.
+    clump_region_values : ndarray
+        Binary values (0/1) sampled along ellipse.
+    clump_region_values_set : list
+        Unique values along ellipse (used for validation).
+    """
+    if len(bubble_clump_ids) > 1:
+        # Merge voxel coords from all clumps
+        clump_coords = bubbleObj.clumpsObj.clump_coords_dict[bubble_clump_ids[0] - 1]
+        for clump_id in bubble_clump_ids[1:]:
+            clump_coords = np.r_[clump_coords,bubbleObj.clumpsObj.clump_coords_dict[clump_id - 1]]
+
+        # Extract local cube centered on clump region
+        clump_region_item, start_coords = Clump_Item_By_Coords(regions_data, clump_coords)
+
+        # Map ellipse coords into local (b,l) coordinate system
+        ellipse_coords_i = np.int64(np.around(np.c_[
+            bubbleObj.ellipse_coords[:, 0] - start_coords[1],
+            bubbleObj.ellipse_coords[:, 1] - start_coords[2]]))
+
+        # Collapse along velocity axis → 2D mask
+        clump_region_item_sum_mask = clump_region_item.sum(0)
+        clump_region_item_sum_mask[clump_region_item_sum_mask > 0] = 1
+
+        # Slight dilation to tolerate boundary mismatch
+        clump_region_item_sum_mask_dilation = morphology.binary_dilation(clump_region_item_sum_mask, morphology.disk(dilation_r))
+        
+        # Sample binary mask values along ellipse
+        H, W = clump_region_item_sum_mask_dilation.shape
+        x, y = ellipse_coords_i.T
+        inside = ((x>=0)&(x<H)&(y>=0)&(y<W))
+        ellipse_coords_i = ellipse_coords_i[inside]
+        if len(ellipse_coords_i)>0:
+            clump_region_values = np.int32(clump_region_item_sum_mask_dilation[ellipse_coords_i[:, 0],ellipse_coords_i[:, 1]])
+        else:
+            clump_region_values = np.array([1])
+        # Unique values (e.g. detect if 0 exists → ellipse crosses empty region)
+        clump_region_values_set = list(set(clump_region_values))
+
+    else:
+        # Not enough clumps to evaluate
+        clump_region_item, clump_region_values, clump_region_values_set = [], [], []
+        
+    return clump_region_item, clump_region_values, clump_region_values_set
+
+
+def Get_Bubble_Clump_Ids(bubbleObj, bubble_region, clump_centers, regions_data, connected_ids_dict,
+                         bubble_clump_ids=None, dilation_r=1):
+    """
+    Determine which clumps are associated with a bubble region.
+
+    Strategy
+    --------
+    If `bubble_clump_ids` is not provided:
+      1) Extract bubble voxels from `bubble_region.coords`.
+      2) Keep largest connected component with optional dilation.
+      3) Map voxels to `regions_data` to obtain clump labels.
+      4) Validate clumps using ellipse sampling:
+         - If ellipse crosses background (label=0), expand region.
+      5) Increase dilation until enough clumps and valid ellipse coverage.
 
     Then:
-      - Expand to include 'connected' clumps based on connected_ids_dict.
-      - Use clump_centers to decide whether connected clumps lie within the bubble’s 2D (b,l) extent.
+      - Expand using `connected_ids_dict`.
+      - Include connected clumps if their centers lie within (b,l) extent.
+
+    Parameters
+    ----------
+    bubble_region : skimage RegionProperties
+        Bubble region in 3D.
+    clump_centers : (Nc,3) ndarray
+        Clump centers [v,b,l].
+    regions_data : 3D ndarray
+        Clump label cube (label = id+1, 0=background).
+    connected_ids_dict : dict
+        Clump adjacency mapping.
+    bubble_clump_ids : array-like or None
+        Optional pre-defined clump ids (zero-based).
+    dilation_r : int
+        Initial dilation radius.
+
+    Returns
+    -------
+    bubble_clump_ids : ndarray
+        Zero-based clump ids inside bubble.
+    bubble_clump_ids_con : ndarray
+        Connected clumps not included in main set.
+    """
+    coords_i = np.array([])
+    v_extend_logic = False
+
+    if bubble_clump_ids is None:
+        coords_i = bubble_region.coords
+
+        # Largest connected component
+        _, _, _, coords_i = Cal_Max_Sub_Region_Coords(
+            coords_i, extend_len=10, dilation_r=dilation_r)
+
+        # Boundary safety
+        coords_i_valid = ((coords_i[:, 0] < regions_data.shape[0]) &
+                          (coords_i[:, 1] < regions_data.shape[1]) &
+                          (coords_i[:, 2] < regions_data.shape[2]) )
+        coords_i = coords_i[coords_i_valid]
+
+        # Initial clump ids
+        bubble_clump_ids = list(set(
+            regions_data[coords_i[:, 0], coords_i[:, 1], coords_i[:, 2]]))
+        if 0 in bubble_clump_ids:
+            bubble_clump_ids.remove(0)
+
+        # Ellipse-based validation
+        clump_region_item, clump_region_values, clump_region_values_set = \
+            Cal_Ellipse_Coords_Values(bubbleObj, regions_data, bubble_clump_ids)
+
+        # Expand region if insufficient or invalid
+        while len(bubble_clump_ids) <= bubbleObj.ClumpNum or 0 in clump_region_values_set:
+            dilation_r += 1
+            _, _, _, coords_i = Cal_Max_Sub_Region_Coords(coords_i, extend_len=10, dilation_r=dilation_r)
+
+            coords_i_valid = (
+                (coords_i[:, 0] < regions_data.shape[0]) &
+                (coords_i[:, 1] < regions_data.shape[1]) &
+                (coords_i[:, 2] < regions_data.shape[2]))
+            coords_i = coords_i[coords_i_valid]
+
+            bubble_clump_ids = list(set(regions_data[coords_i[:, 0], coords_i[:, 1], coords_i[:, 2]]))
+            if 0 in bubble_clump_ids:
+                bubble_clump_ids.remove(0)
+
+            clump_region_item, clump_region_values, clump_region_values_set = \
+                Cal_Ellipse_Coords_Values(bubbleObj, regions_data, bubble_clump_ids)
+
+            if dilation_r > 3:
+                break
+
+        bubble_clump_ids = np.array(bubble_clump_ids) - 1
+
+    # Collect connected clumps
+    bubble_clump_ids_con = []
+    bubble_clump_ids_con_used = []
+
+    for clump_id in bubble_clump_ids:
+        bubble_clump_ids_con += connected_ids_dict[clump_id]
+
+    bubble_clump_ids = bubble_clump_ids.tolist()
+    bubble_clump_ids_con = list(set(bubble_clump_ids_con))
+
+    # Spatial filtering in (b,l)
+    for clump_id_con in bubble_clump_ids_con:
+        if len(coords_i) > 0:
+            v_extend_logic = (
+                clump_centers[clump_id_con][1] > coords_i[:, 1].min() and
+                clump_centers[clump_id_con][1] < coords_i[:, 1].max() and
+                clump_centers[clump_id_con][2] > coords_i[:, 2].min() and
+                clump_centers[clump_id_con][2] < coords_i[:, 2].max())
+
+        if clump_id_con not in bubble_clump_ids and v_extend_logic:
+            bubble_clump_ids.append(clump_id_con)
+        elif clump_id_con not in bubble_clump_ids:
+            bubble_clump_ids_con_used.append(clump_id_con)
+
+    bubble_clump_ids = np.array(bubble_clump_ids)
+    bubble_clump_ids_con = np.array(bubble_clump_ids_con_used)
+
+    if len(bubble_clump_ids_con) == 0:
+        bubble_clump_ids_con = bubble_clump_ids
+
+    return bubble_clump_ids, bubble_clump_ids_con
+    
+
+def Get_Bubble_Clump_Ids_V2(bubble_region, clump_centers, regions_data, connected_ids_dict,
+                            bubble_clump_ids=None, dilation_r=1, dilation_rv=5):
+    """
+    Determine which clumps are associated with a given bubble region.
+
+    Strategy
+    --------
+    If `bubble_clump_ids` is not provided:
+      1) Start from `bubble_region.coords`.
+      2) Extract the largest connected sub-region with optional dilation.
+      3) Query `regions_data` to get clump labels intersecting this region.
+      4) If too few clumps are found, increase `dilation_r` and retry.
+      5) Apply a second, larger dilation (`dilation_rv`) and keep only voxels
+         whose projected (b,l) positions overlap the original set, in order to
+         supplement clumps mainly along the velocity direction.
+
+    Then:
+      - Expand to include clumps connected through `connected_ids_dict`.
+      - Return the main bubble clumps and the connected-but-not-included clumps.
 
     Parameters
     ----------
     bubble_region : skimage RegionProperties
         RegionProperties for a bubble candidate in 3D.
     clump_centers : (Nc, 3) ndarray
-        Clump centers in pixel coordinates [v, b, l] (or [x, y, z]).
+        Clump centers in pixel coordinates [v, b, l].
+        (Kept for interface consistency; not used in the current logic.)
     regions_data : 3D ndarray
         Label cube where each voxel belongs to a clump (label = clump_id + 1),
         and 0 indicates background.
     connected_ids_dict : dict
-        Mapping clump_id -> list of clump_ids that are considered connected (graph adjacency).
+        Mapping clump_id -> list of connected clump_ids.
     bubble_clump_ids : array-like or None
-        If provided, skip voxel->label extraction and use these clump ids directly.
-        NOTE: In this codebase, returned IDs are zero-based (label-1).
+        If provided, skip voxel-to-label extraction and use these clump ids directly.
+        Returned ids are zero-based.
     dilation_r : int
-        Dilation radius used in Cal_Max_Sub_Region_Coords when extracting bubble voxels.
+        Initial dilation radius used in `Cal_Max_Sub_Region_Coords`.
+    dilation_rv : int
+        Larger dilation radius used to extend the region along velocity while
+        preserving the projected (b,l) footprint.
 
     Returns
     -------
     bubble_clump_ids : ndarray
-        Zero-based clump ids considered part of the bubble (possibly expanded by connectivity).
+        Zero-based clump ids considered part of the bubble.
     bubble_clump_ids_con : ndarray
-        Zero-based clump ids that are connected but NOT inside the bubble’s 2D extent (fallback: equals bubble_clump_ids).
+        Zero-based clump ids connected to the bubble clumps but not included in
+        `bubble_clump_ids`. If empty, falls back to `bubble_clump_ids`.
     """
-    coords_i = np.array([])   # Will hold a representative set of bubble voxels (global coords)
-    v_extend_logic = False    # Gate to include connected clumps based on spatial overlap
+    coords_i = np.array([])   # Representative bubble voxel coords in global space
 
-    # If clump IDs are not provided, infer them from the bubble voxels in regions_data
+    # Infer bubble clump ids from the bubble voxels if not provided
     if bubble_clump_ids is None:
         coords_i = bubble_region.coords
 
-        # Keep the largest connected subset; optionally dilate to bridge small gaps
+        # Keep the largest connected subset; optionally bridge small gaps
         _, _, _, coords_i = Cal_Max_Sub_Region_Coords(coords_i, extend_len=10, dilation_r=dilation_r)
 
-        # Safety: filter coords that may exceed cube boundaries
+        # Remove coords outside the valid cube bounds
         coords_i_valid = (coords_i[:, 0] < regions_data.shape[0]) & \
                          (coords_i[:, 1] < regions_data.shape[1]) & \
                          (coords_i[:, 2] < regions_data.shape[2])
         coords_i = coords_i[coords_i_valid]
 
-        # Pull clump labels from regions_data; remove background label 0
+        # Query clump labels overlapping the current voxel set
         bubble_clump_ids = list(set(regions_data[coords_i[:, 0], coords_i[:, 1], coords_i[:, 2]]))
         if 0 in bubble_clump_ids:
             bubble_clump_ids.remove(0)
 
-        # If too few clumps found, retry with a slightly larger dilation
-        
+        # Retry with larger dilation if too few clumps are found
         while len(bubble_clump_ids) < 4:
             dilation_r += 1
             _, _, _, coords_i = Cal_Max_Sub_Region_Coords(coords_i, extend_len=10, dilation_r=dilation_r)
@@ -1435,49 +1766,61 @@ def Get_Bubble_Clump_Ids(bubble_region, clump_centers, regions_data, connected_i
             if dilation_r > 4:
                 break
 
-        # Convert from label-space (1..N) to zero-based clump ids (0..N-1)
-        bubble_clump_ids = np.array(bubble_clump_ids) - 1
+        # Extend the region with a larger dilation and keep only voxels whose
+        # projected (b,l) positions overlap the original set
+        _, _, _, coords_i2 = Cal_Max_Sub_Region_Coords(coords_i, extend_len=10, dilation_r=dilation_rv)
+        coords_i2_common_v = []
+        for coords_i2_i in coords_i2:
+            if (coords_i2_i[1:] == coords_i[:, 1:]).all(axis=1).any():
+                coords_i2_common_v.append(coords_i2_i)
+        coords_i2_common_v = np.array(coords_i2_common_v)
 
-    # Gather "connected" clumps from the adjacency mapping
+        # Query additional clumps from the velocity-extended voxel set
+        coords_i_valid = (coords_i2_common_v[:, 0] < regions_data.shape[0]) & \
+                         (coords_i2_common_v[:, 1] < regions_data.shape[1]) & \
+                         (coords_i2_common_v[:, 2] < regions_data.shape[2])
+        coords_i2_common_v = coords_i2_common_v[coords_i_valid]
+        bubble_clump_ids_2 = list(set(
+            regions_data[coords_i2_common_v[:, 0],coords_i2_common_v[:, 1],coords_i2_common_v[:, 2]]))
+        if 0 in bubble_clump_ids_2:
+            bubble_clump_ids_2.remove(0)
+
+        bubble_clump_ids_2_used = [] 
+        for clump_id in bubble_clump_ids: 
+            for connected_id in connected_ids_dict[clump_id]: 
+                if connected_id in bubble_clump_ids_2: 
+                    bubble_clump_ids_2_used.append(connected_id)
+
+        # Merge base and extended clump labels
+        bubble_clump_ids = list(set(np.r_[bubble_clump_ids, bubble_clump_ids_2]))
+
+        # Convert from label-space (1..N) to zero-based clump ids (0..N-1)
+        bubble_clump_ids = np.int64(np.array(bubble_clump_ids) - 1)
+
+    # Gather clumps connected to the bubble clumps
     bubble_clump_ids_con = []
     bubble_clump_ids_con_used = []
 
     for clump_id in bubble_clump_ids:
         bubble_clump_ids_con += connected_ids_dict[clump_id]
 
-    # Deduplicate connected list; ensure bubble_clump_ids is mutable list for appending
-    bubble_clump_ids = bubble_clump_ids.tolist()
+    # Keep connected clumps that are not already included in the main set
     bubble_clump_ids_con = list(set(bubble_clump_ids_con))
-
-    # Decide whether to include connected clumps into the main set:
-    # only include if the connected clump's center lies within the bubble voxel 2D extent (b,l)
     for clump_id_con in bubble_clump_ids_con:
-        if len(coords_i) > 0:
-            v_extend_logic = (
-                clump_centers[clump_id_con][1] > coords_i[:, 1].min() and
-                clump_centers[clump_id_con][1] < coords_i[:, 1].max() and
-                clump_centers[clump_id_con][2] > coords_i[:, 2].min() and
-                clump_centers[clump_id_con][2] < coords_i[:, 2].max()
-            )
-
-        if clump_id_con not in bubble_clump_ids and v_extend_logic:
-            # Add connected clump into bubble set if it spatially overlaps in (b,l)
-            bubble_clump_ids.append(clump_id_con)
-        elif clump_id_con not in bubble_clump_ids:
-            # Otherwise keep it as "connected but not included"
+        if clump_id_con not in bubble_clump_ids:
             bubble_clump_ids_con_used.append(clump_id_con)
 
     bubble_clump_ids = np.array(bubble_clump_ids)
     bubble_clump_ids_con = np.array(bubble_clump_ids_con_used)
 
-    # Fallback: if no "connected-but-not-used" clumps exist, keep con list identical
+    # Fallback: if no extra connected clumps remain, reuse the main set
     if len(bubble_clump_ids_con) == 0:
         bubble_clump_ids_con = bubble_clump_ids
 
     return bubble_clump_ids, bubble_clump_ids_con
 
 
-def Get_Bubble_Gas_Infor(bubbleObj, index, add_con, systemic_v_type):
+def Get_Bubble_Gas_Infor(bubbleObj, index, systemic_v_type):
     """
     Compute gas-related information for a specific bubble.
 
@@ -1494,9 +1837,6 @@ def Get_Bubble_Gas_Infor(bubbleObj, index, add_con, systemic_v_type):
         Object holding clumpsObj, bubble_clump_ids, etc. Results are stored back into bubbleObj.
     index : int
         Bubble index (used to access bubble centers in WCS if needed).
-    add_con : bool
-        Provided in signature but not used directly inside; the function always computes both
-        bubble-only and bubble+connected versions.
     systemic_v_type : int
         1: systemic velocity from mean gas center in WCS (bubble+connected)
         2: systemic velocity from bubble inner clump center in WCS
@@ -1669,34 +2009,34 @@ def Cal_Bub_Weights(bubbleObj, type='mean'):
     if type == 'mean':
         for bub_id in range(len(bubbleObj.bubble_coms_wcs)):
             bub_weight = bubbleObj.bubble_weight_data[
-                bubbleObj.bubbles_coords[bub_id][:, 0],
-                bubbleObj.bubbles_coords[bub_id][:, 1],
-                bubbleObj.bubbles_coords[bub_id][:, 2]
+                bubbleObj.bubble_regions[bub_id].coords[:, 0],
+                bubbleObj.bubble_regions[bub_id].coords[:, 1],
+                bubbleObj.bubble_regions[bub_id].coords[:, 2]
             ].mean()
             bub_weights.append(np.around(bub_weight, 3))
 
     elif type == 'max':
         for bub_id in range(len(bubbleObj.bubble_coms_wcs)):
             bub_weight = bubbleObj.bubble_weight_data[
-                bubbleObj.bubbles_coords[bub_id][:, 0],
-                bubbleObj.bubbles_coords[bub_id][:, 1],
-                bubbleObj.bubbles_coords[bub_id][:, 2]
+                bubbleObj.bubble_regions[bub_id].coords[:, 0],
+                bubbleObj.bubble_regions[bub_id].coords[:, 1],
+                bubbleObj.bubble_regions[bub_id].coords[:, 2]
             ].max()
             bub_weights.append(np.around(bub_weight, 3))
 
     elif type == 'median':
         for bub_id in range(len(bubbleObj.bubble_coms_wcs)):
             bub_weight = np.median(bubbleObj.bubble_weight_data[
-                bubbleObj.bubbles_coords[bub_id][:, 0],
-                bubbleObj.bubbles_coords[bub_id][:, 1],
-                bubbleObj.bubbles_coords[bub_id][:, 2]
+                bubbleObj.bubble_regions[bub_id].coords[:, 0],
+                bubbleObj.bubble_regions[bub_id].coords[:, 1],
+                bubbleObj.bubble_regions[bub_id].coords[:, 2]
             ])
             bub_weights.append(np.around(bub_weight, 3))
 
     bubbleObj.bub_weights = bub_weights
 
 
-def Resort_Ellipse_Coords(bubbleObj,ellipse_start_type='max'):
+def Resort_Ellipse_Coords(bubbleObj,add_con=False,ellipse_start_type='max'):
     """
     Reorder ellipse contour coordinates so that the "starting point" is placed
     at a location with maximal or minimal nearby gas intensity, or is original coordinates.
@@ -1711,21 +2051,25 @@ def Resort_Ellipse_Coords(bubbleObj,ellipse_start_type='max'):
     ------------
     Updates bubbleObj.ellipse_coords in-place.
     """
-    bubble_gas_item_1 = bubbleObj.bubble_gas_item_1
-    start_coords_gas_item_1 = bubbleObj.start_coords_gas_item_1
+    if add_con==False:
+        bubble_gas_item = bubbleObj.bubble_gas_item_1
+        start_coords_gas_item = bubbleObj.start_coords_gas_item_1
+    else:
+        bubble_gas_item = bubbleObj.bubble_gas_item_2
+        start_coords_gas_item = bubbleObj.start_coords_gas_item_2
 
     # Convert global ellipse coords to local (b,l) coords inside gas sub-cube
-    ellipse_coords_gas_1 = np.int64(np.around(bubbleObj.ellipse_coords - start_coords_gas_item_1[1:]))
+    ellipse_coords_gas = np.int64(np.around(bubbleObj.ellipse_coords - start_coords_gas_item[1:]))
 
     ellipse_values = []
-    for ellipse_coord_gas_1 in ellipse_coords_gas_1:
+    for ellipse_coord_gas in ellipse_coords_gas:
         # Neighborhood sampling around an ellipse point (in 2D plane)
         neighbor_coords = BFTools.Generate_Neighbor_coords(
-            np.int64(np.around(ellipse_coord_gas_1)),
-            bubble_gas_item_1.sum(0).shape
+            np.int64(np.around(ellipse_coord_gas)),
+            bubble_gas_item.sum(0).shape
         )
         if len(neighbor_coords) > 0:
-            ellipse_value = bubble_gas_item_1.sum(0)[neighbor_coords[:, 0], neighbor_coords[:, 1]].sum()
+            ellipse_value = bubble_gas_item.sum(0)[neighbor_coords[:, 0], neighbor_coords[:, 1]].sum()
         else:
             ellipse_value = 0
         ellipse_values.append(ellipse_value)
@@ -1744,7 +2088,7 @@ def Resort_Ellipse_Coords(bubbleObj,ellipse_start_type='max'):
             bubbleObj.ellipse_coords[:ellipse_coords_order[0] + 1]
         ]
     else:
-        ellipse_coords_updated = ellipse_coords_gas_1
+        ellipse_coords_updated = ellipse_coords_gas
     bubbleObj.ellipse_coords = ellipse_coords_updated
 
 

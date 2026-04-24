@@ -1,7 +1,6 @@
-import time
 import numpy as np
 import scipy.ndimage as ndimage
-from skimage import measure, morphology
+from skimage import measure
 from scipy.spatial.distance import cdist
 from scipy.special import ellipe
 from scipy.optimize import fsolve
@@ -812,7 +811,7 @@ def Map_Curve_From_Unwrapped_Ellipse(curve_normal, curve_arc, center_x, center_y
 
 
 def Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=None, unwrap_width=None, angle_offset=None,
-                                 unwrapped_zero_col=11, unwrap_value='max', trim_logic=True):
+                                 bubble_radius_min=4, ra_min = 2, unwrapped_zero_col=11, unwrap_value='max', trim_logic=True):
     """
     High-level pipeline: compute bubble skeleton by unwrapping the bubble onto an ellipse.
 
@@ -835,6 +834,8 @@ def Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=None, unwrap_width=Non
         Half-width in pixels for normal sampling during unwrapping.
     angle_offset : float or None
         Starting angle in degrees for unwrapping.
+    bubble_radius_min : int
+        The minimum value for bubble radius
     unwrapped_zero_col : int
         Used to zero out a fraction of radial rows near the top/bottom of unwrapped image.
     unwrap_value : {'max','min'}
@@ -859,12 +860,12 @@ def Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=None, unwrap_width=Non
         ellipse_angle_rad = 0
     elif hasattr(bubbleObj, 'ellipse_infor'):
         ellipse_x00, ellipse_y00, ellipse_angle, semi_major_0, semi_minor_0 = bubbleObj.ellipse_infor
-        semi_major = bubble_radius
-        semi_minor = bubble_radius * np.abs(semi_minor_0 / semi_major_0)
+        semi_major = np.max([bubble_radius,bubble_radius_min])
+        semi_minor = np.max([bubble_radius,bubble_radius_min]) * np.abs(semi_minor_0 / semi_major_0)
         ellipse_angle_rad = np.radians(90 - ellipse_angle)
     else:
-        semi_major = bubble_radius
-        semi_minor = bubble_radius
+        semi_major = np.max([bubble_radius,bubble_radius_min])
+        semi_minor = np.max([bubble_radius,bubble_radius_min])
         ellipse_angle_rad = 0
 
     # Unwrapping center in image coords (x=l, y=b ordering is assumed here)
@@ -907,12 +908,11 @@ def Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=None, unwrap_width=Non
             Graph_find_skeleton, Tree = Graph_Infor_Connected_Unwrapped_Bub(unwrapped_bub_data, mask_coords)
             splice_nodes_pair = Get_Splice_Nodes_Pair(unwrapped_bub_data, mask_coords, Tree)
             skeleton_coords_unwrapped_i = Get_Bubble_Skeleton_Weighted_Unwrapped(
-                unwrapped_bub_data, Tree, splice_nodes_pair, mask_coords, trim_logic
-            )
+                unwrapped_bub_data, Tree, splice_nodes_pair, mask_coords, trim_logic)
 
             skeleton_coords_unwrapped_i, skeleton_radial, skeleton_angles = Get_Mapping_Skeleton_Coords(
-                skeleton_coords_unwrapped_i, unwrap_width
-            )
+                skeleton_coords_unwrapped_i, unwrap_width)
+            
             skeleton_coords_unwrapped = np.r_[skeleton_coords_unwrapped, skeleton_coords_unwrapped_i]
             
     skeleton_coords_unwrapped = skeleton_coords_unwrapped[1:]
@@ -941,7 +941,13 @@ def Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=None, unwrap_width=Non
     skeleton_coords_original = np.c_[skeleton_y, skeleton_x] + start_coords_item[1:]
     skeleton_coords_ellipse = skeleton_coords_ellipse + start_coords_item[1:]
 
+    if skeleton_ellipse_infor[4] < ra_min:
+        skeleton_ellipse_infor = bubbleObj.ellipse_infor_cav
+        skeleton_coords_ellipse = bubbleObj.ellipse_coords_cav
+
     # Store all products into bubbleObj
+    bubbleObj.unwrap_semi_major = semi_major
+    bubbleObj.unwrap_semi_minor = semi_minor
     bubbleObj.unwrap_ellipse_points = unwrap_ellipse_points
     bubbleObj.point_mvalue = point_mvalue
     bubbleObj.unwrap_radius = unwrap_radius

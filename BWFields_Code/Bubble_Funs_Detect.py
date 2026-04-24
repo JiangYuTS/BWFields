@@ -1,11 +1,6 @@
-import time
 import numpy as np
 import matplotlib.pyplot as plt
-import astropy.io.fits as fits
-import astropy.wcs as WCS
 from astropy import units as u
-from astropy.table import Table
-from skimage import filters, measure, morphology
 from collections import defaultdict
 
 # Import custom modules related to Bubble analysis
@@ -21,9 +16,9 @@ from . import MeerKAT_Code as MKCode
 
 
 def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_infor_provided=None, add_cons=[False, True], 
-                                               fixed_ec=True, half_ecoords=True, systemic_v_type=1, SymScore=0.5, ExpSign=0.5, 
+                                               fixed_ec=True, half_ecoords=True, systemic_v_type=1, SymScore=0.8, ExpSign=1, 
                                                pv_type=None, pv_width=2, unwrap_radius=None, unwrap_width=None, angle_offset=None, 
-                                               plot_logic=False, update_contour=False):
+                                               plot_logic=False, update_contour=False,mean_line_num=2):
     """
     Detect and determine bubble properties using morphology, profile fitting, and velocity analysis.
 
@@ -61,6 +56,8 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
         Whether to generate plots during the analysis.
     update_contour : bool
         Whether to update the contour and ellipse information after analysis.
+    mean_line_num : int
+        The minimum intensity profile number for a point on mean intensity profile
     """
     # Initialize variables to store data
     bubble_used_ids = []
@@ -70,13 +67,13 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
     exp_sign_pers = []
     bubble_gas_coms_wcs_2 = []
     thicknesss = []
+    thicknesss_error = []
     skeleton_ellipse_coms_wcs = []
     skeleton_ellipse_angle_abs = []
     exp_maxs = []
     sym_scores = []
     exp_significances = []
     
-
     bubble_coms = bubbleObj.bubble_coms
 
     updata_records = False
@@ -92,12 +89,12 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
         # Get bubble morphology and fit the profile
         bubbleObj.Get_Bubble_Item_Morphology(index, dictionary_cuts, add_con, bubble_infor_provided, 
                                              systemic_v_type=systemic_v_type, fixed_ec=fixed_ec, half_ecoords=half_ecoords)
-        BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=4, mean_line_range=[-30, 30], ExtendRange=0)
-        fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, left_constraint_width=10, right_constraint_width=10)
+        if len(bubbleObj.bubble_clump_ids) > bubbleObj.ClumpNum:  
+            BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=0, mean_line_range=[-30, 30], ExtendRange=0)
+            fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, left_constraint_width=10, right_constraint_width=10)
 
-        # If the fit was successful, proceed with further analysis
-        recal = False
-        if len(bubbleObj.bubble_clump_ids) > 0:  
+            # If the fit was successful, proceed with further analysis
+        
             symmetry_score_0 = bubbleObj.fit_results['symmetry_score']
             if symmetry_score_0 < SymScore or bubbleObj.fit_results['local_fit'] == False:
                 # Reprocess if the symmetry score is below threshold
@@ -105,9 +102,8 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
                 fixed_ec_T = not fixed_ec
                 bubbleObj.Get_Bubble_Item_Morphology(index, dictionary_cuts, add_con, bubble_infor_provided, 
                                                      systemic_v_type=systemic_v_type, fixed_ec=fixed_ec_T, half_ecoords=half_ecoords)
-                BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=4, mean_line_range=[-30, 30], ExtendRange=0)
-                fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, left_constraint_width=10, right_constraint_width=10)
-                recal = True
+                BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=mean_line_num, mean_line_range=[-30, 30], ExtendRange=0)
+                fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, left_constraint_width=6, right_constraint_width=6)
                 
             symmetry_score_1 = bubbleObj.fit_results['symmetry_score']
             if symmetry_score_1 <= symmetry_score_0 or bubbleObj.fit_results['local_fit'] == False:
@@ -115,24 +111,18 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
                 dictionary_cuts = defaultdict(list)
                 bubbleObj.Get_Bubble_Item_Morphology(index, dictionary_cuts, add_con, bubble_infor_provided, 
                                                      systemic_v_type=systemic_v_type, fixed_ec=fixed_ec, half_ecoords=half_ecoords)
-                BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=4, mean_line_range=[-30, 30], ExtendRange=0)
-                fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, ref_ellipse='cavity')
-                recal = False
-                
-        if plot_logic:
-            ax0 = BFPl.Plot_Bubble_Gas_Region(bubbleObj, add_con=False, plot_clump=True, text_num=False, text_com=True)
-            ax0 = BFPl.Plot_Bubble_Gas_Region(bubbleObj, add_con=True, plot_clump=True, text_num=False, text_com=True)
-            # ax0 = BFPl.Plot_Bubble_Item(bubbleObj, figsize=(8, 6), fontsize=12, spacing=12*u.arcmin)
-            ax0 = BFPl.Plot_Profile_Fit(bubbleObj, figsize=(6, 4))
-            plt.show()
+                BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=mean_line_num, mean_line_range=[-30, 30], ExtendRange=0)
+                fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, left_constraint_width=6, right_constraint_width=6)
 
-        if len(bubbleObj.bubble_clump_ids) > 0 and bubbleObj.dictionary_cuts['empty_logic'] == False:
+            if plot_logic:
+                ax0 = BFPl.Plot_Bubble_Gas_Region(bubbleObj, add_con=False, plot_clump=True, text_num=False, text_com=True)
+                ax0 = BFPl.Plot_Bubble_Gas_Region(bubbleObj, add_con=True, plot_clump=True, text_num=False, text_com=True)
+                # ax0 = BFPl.Plot_Bubble_Item(bubbleObj, figsize=(8, 6), fontsize=12, spacing=12*u.arcmin)
+                ax0 = BFPl.Plot_Profile_Fit(bubbleObj, figsize=(6, 4))
+                plt.show()
+
+        if len(bubbleObj.bubble_clump_ids) > bubbleObj.ClumpNum and bubbleObj.dictionary_cuts['empty_logic'] == False:
             bubble_params_RFWHM = BFPr.Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='cavity', SymScore=SymScore)
-            # Unwrap bubble skeleton and perform further analysis
-            if recal:
-                dictionary_cuts = defaultdict(list)
-                bubbleObj.Get_Bubble_Item_Morphology(index, dictionary_cuts, add_con, bubble_infor_provided, 
-                                                 systemic_v_type=systemic_v_type, fixed_ec=fixed_ec, half_ecoords=half_ecoords)
                 
             BFS.Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=unwrap_radius, unwrap_width=unwrap_width, 
                                              angle_offset=angle_offset, unwrap_value='max', trim_logic=True)
@@ -146,86 +136,101 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
                                 skeleton_ellipse_infor=bubbleObj.skeleton_ellipse_infor,
                                 skeleton_coords_ellipse=bubbleObj.skeleton_coords_ellipse)
             
-            BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=4, mean_line_range=[-30, 30], ExtendRange=0)
-            fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, ref_ellipse='skeleton', bounds_per=2)
-            bubble_params_RFWHM = BFPr.Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='skeleton', SymScore=SymScore)
-            symmetry_score = bubbleObj.fit_results['symmetry_score']
-            sym_scores.append(symmetry_score)
+            if bubbleObj.dictionary_cuts['empty_logic'] == False:
+                BFPr.Cal_Mean_Profile(bubbleObj, mean_line_num=mean_line_num, mean_line_range=[-30, 30], ExtendRange=0)
+                fit_results = BFPr.Fit_Double_Gaussian(bubbleObj, local_fit=True, ref_ellipse='skeleton', bounds_per=2)
+                bubble_params_RFWHM = BFPr.Cal_Bubble_RFWHM(bubbleObj, ref_ellipse='skeleton', SymScore=SymScore)
+                symmetry_score = bubbleObj.fit_results['symmetry_score']
+                sym_scores.append(symmetry_score)
 
-            if plot_logic:
-                ax0 = BFPl.Plot_Unwrap_Bubble_Infor(bubbleObj, add_con=add_con, plot_clump=False, plot_ellipse=False, 
-                                            plot_contour=True, plot_circles=[False, False], plot_annotate=False, 
-                                            plot_skeleton=True, plot_skeleton_ellipse=True, skeleton_types=['scatter', 'line'], 
-                                            linewidth=1.5, figsize=(8, 6), fontsize=12)
-                
-                ax0 = BFPl.Plot_Unwrapped_Bub_Data(bubbleObj, fontsize=12, figsize=(15, 3))
-                
-                ax0 = BFPl.Plot_Profile_Fit(bubbleObj, figsize=(6, 4))
-                plt.show()
-            
-            add_con = add_cons[2]
-            dictionary_cuts = defaultdict(list)
-            bubbleObj.Get_Bubble_Item_Morphology(
-                                index, dictionary_cuts, add_con, bubble_infor_provided,
-                                systemic_v_type=systemic_v_type, fixed_ec=fixed_ec_T, half_ecoords=half_ecoords,
-                                skeleton_ellipse_infor=bubbleObj.skeleton_ellipse_infor,
-                                skeleton_coords_ellipse=bubbleObj.skeleton_coords_ellipse)
+                if plot_logic:
+                    ax0 = BFPl.Plot_Unwrap_Bubble_Infor(bubbleObj, add_con=add_con, plot_clump=False, plot_ellipse=False, 
+                                                plot_contour=True, plot_circles=[False, False], plot_annotate=False, 
+                                                plot_skeleton=True, plot_skeleton_ellipse=True, skeleton_types=['scatter', 'line'], 
+                                                linewidth=1.5, figsize=(8, 6), fontsize=12)
 
-            if update_contour:
-                BFS.Update_Contour_And_Ellipse_Infor(bubbleObj, add_con)
-                
-            BFPV.Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=pv_type, width=pv_width)
-            exp_significances.append(bubbleObj.max_Sexp)
+                    ax0 = BFPl.Plot_Unwrapped_Bub_Data(bubbleObj, fontsize=12, figsize=(15, 3))
 
-            if bubbleObj.max_Sexp > ExpSign:
-                bubble_high_exp_ids.append(index)
-                
-            if plot_logic:
-                line_index = bubbleObj.exp_central_delta_v_arg_max
-                ax0 = BFPl.Plot_Bubble_Item(
-                    bubbleObj, line_index=line_index, line_logics=[True,True],tick_logic=False, label_e='Skeleton', 
-                    figsize=(8, 6), fontsize=12, spacing=12*u.arcmin)
-                
-                ax0 = BFPl.Plot_Radial_Velocity_Profile_Mean(bubbleObj)
-                plt.show()
+                    ax0 = BFPl.Plot_Profile_Fit(bubbleObj, figsize=(6, 4))
+                    plt.show()
 
-            # Store results in a structured table format
-            skeleton_ellipse_infor_record.append(bubbleObj.skeleton_ellipse_infor)
-            skeleton_coords_ellipse_record.append(bubbleObj.skeleton_coords_ellipse)
-            exp_sign_pers.append([bubbleObj.exp_sign_positive_mean_per, bubbleObj.exp_sign_negative_mean_per, 
-                                  bubbleObj.exp_sign_diff_mean_per])
-            bubble_gas_coms_wcs_2.append(bubbleObj.bubble_gas_com_wcs_2)
-            thicknesss.append(np.around(bubbleObj.bubble_params_RFWHM['thickness'], 3))
+                add_con = add_cons[2]
+                dictionary_cuts = defaultdict(list)
+                bubbleObj.Get_Bubble_Item_Morphology(
+                                    index, dictionary_cuts, add_con, bubble_infor_provided,
+                                    systemic_v_type=systemic_v_type, fixed_ec=fixed_ec_T, half_ecoords=half_ecoords,
+                                    skeleton_ellipse_infor=bubbleObj.skeleton_ellipse_infor,
+                                    skeleton_coords_ellipse=bubbleObj.skeleton_coords_ellipse)
 
-            # Translate the skeleton ellipse coordinates to world coordinates (WCS)
-            skeleton_ellipse_com_wcs_lb = BFTools.Translate_Coords_LBV([np.r_[bubbleObj.skeleton_ellipse_infor[:2][::-1], 0]], 
-                                                                        bubbleObj.clumpsObj.data_wcs, pix2world=True)
-            skeleton_ellipse_coms_wcs.append(np.r_[skeleton_ellipse_com_wcs_lb[0][:2], bubbleObj.systemic_v])
-            skeleton_ellipse_angle_abs.append(bubbleObj.skeleton_ellipse_infor[2:])
-            
-            # Perform expansion analysis and store results
-            expansion_analysis_mean = bubbleObj.expansion_analysis_mean
-            expansion_analysis_mean_red = bubbleObj.expansion_analysis_mean_red
-            expansion_analysis_mean_blue = bubbleObj.expansion_analysis_mean_blue
-            exp_left_max = expansion_analysis_mean_red['expansion_left_max']
-            exp_right_max = expansion_analysis_mean_red['expansion_right_max']
-            exp_max_red = (exp_left_max + exp_right_max) / 2
-            exp_left_max = expansion_analysis_mean_blue['expansion_left_max']
-            exp_right_max = expansion_analysis_mean_blue['expansion_right_max']
-            exp_max_blue = (exp_left_max + exp_right_max) / 2
-            exp_max_red_blue = np.around(exp_max_red - exp_max_blue, 3)
-            exp_maxs.append(exp_max_red_blue)
-            bubble_used_ids.append(index)
+                if update_contour:
+                    BFS.Update_Contour_And_Ellipse_Infor(bubbleObj, add_con)
+
+                BFPV.Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=pv_type, width=pv_width)
+                exp_significances.append(bubbleObj.max_Sexp)
+
+                if bubbleObj.max_Sexp >= ExpSign:
+                    bubble_high_exp_ids.append(index)
+
+                if plot_logic:
+                    line_index = bubbleObj.exp_central_delta_v_arg_max
+                    ax0 = BFPl.Plot_Bubble_Item(
+                        bubbleObj, line_index=line_index, line_logics=[True,True],tick_logic=False, label_e='Skeleton', 
+                        figsize=(8, 6), fontsize=12, spacing=12*u.arcmin)
+
+                    ax0 = BFPl.Plot_Radial_Velocity_Profile_Mean(bubbleObj)
+                    plt.show()
+
+                # Store results in a structured table format
+                skeleton_ellipse_infor_record.append(bubbleObj.skeleton_ellipse_infor)
+                skeleton_coords_ellipse_record.append(bubbleObj.skeleton_coords_ellipse)
+                exp_sign_pers.append([bubbleObj.exp_sign_positive_mean_per, bubbleObj.exp_sign_negative_mean_per, 
+                                      bubbleObj.exp_sign_diff_mean_per])
+                bubble_gas_coms_wcs_2.append(bubbleObj.bubble_gas_com_wcs_2)
+                thicknesss.append(np.around(bubbleObj.bubble_params_RFWHM['thickness'], 3))
+                thicknesss_error.append(np.around(bubbleObj.bubble_params_RFWHM['thickness'], 3))
+
+                # Translate the skeleton ellipse coordinates to world coordinates (WCS)
+                skeleton_ellipse_com_wcs_lb = BFTools.Translate_Coords_LBV([np.r_[bubbleObj.skeleton_ellipse_infor[:2][::-1], 0]], 
+                                                                            bubbleObj.clumpsObj.data_wcs, pix2world=True)
+                skeleton_ellipse_coms_wcs.append(np.r_[skeleton_ellipse_com_wcs_lb[0][:2], bubbleObj.systemic_v])
+                skeleton_ellipse_angle_abs.append(bubbleObj.skeleton_ellipse_infor[2:])
+
+                # Perform expansion analysis and store results
+                expansion_analysis_mean = bubbleObj.expansion_analysis_mean
+                expansion_analysis_mean_red = bubbleObj.expansion_analysis_mean_red
+                expansion_analysis_mean_blue = bubbleObj.expansion_analysis_mean_blue
+                exp_left_max = expansion_analysis_mean_red['expansion_left_max']
+                exp_right_max = expansion_analysis_mean_red['expansion_right_max']
+                exp_max_red = (exp_left_max + exp_right_max) / 2
+                exp_left_max = expansion_analysis_mean_blue['expansion_left_max']
+                exp_right_max = expansion_analysis_mean_blue['expansion_right_max']
+                exp_max_blue = (exp_left_max + exp_right_max) / 2
+                exp_max_red_blue = np.around(exp_max_red - exp_max_blue, 3)
+                exp_maxs.append(exp_max_red_blue)
+                bubble_used_ids.append(index)
+            else:
+                sym_scores.append([])
+                exp_significances.append([])
+                skeleton_ellipse_infor_record.append([])
+                skeleton_coords_ellipse_record.append([])
+                exp_sign_pers.append([[], [], []])
+                bubble_gas_coms_wcs_2.append([])
+                thicknesss.append([])
+                thicknesss_error.append([])
+                skeleton_ellipse_coms_wcs.append([])
+                skeleton_ellipse_angle_abs.append([])
+                exp_maxs.append([])
             
         else:
             # If no gas clumps, record empty results
             sym_scores.append([])
-            exp_signs.append([])
+            exp_significances.append([])
             skeleton_ellipse_infor_record.append([])
             skeleton_coords_ellipse_record.append([])
             exp_sign_pers.append([[], [], []])
             bubble_gas_coms_wcs_2.append([])
             thicknesss.append([])
+            thicknesss_error.append([])
             skeleton_ellipse_coms_wcs.append([])
             skeleton_ellipse_angle_abs.append([])
             exp_maxs.append([])
@@ -240,6 +245,7 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
         bubbleObj.exp_sign_pers = exp_sign_pers
         bubbleObj.bubble_gas_coms_wcs_2 = bubble_gas_coms_wcs_2
         bubbleObj.thicknesss = thicknesss
+        bubbleObj.thicknesss_error = thicknesss_error
         bubbleObj.skeleton_ellipse_coms_wcs = skeleton_ellipse_coms_wcs
         bubbleObj.skeleton_ellipse_angle_abs = skeleton_ellipse_angle_abs
         bubbleObj.exp_maxs = exp_maxs

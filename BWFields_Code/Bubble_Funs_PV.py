@@ -308,13 +308,8 @@ def Analyze_Expansion_Signature(position_axis, weighted_velocity, velocity_dispe
     vel_valid = weighted_velocity[valid_mask]
     disp_valid = velocity_dispersion[valid_mask]
 
-    # If not given, estimate systemic velocity from the point closest to center
-    if systemic_v is None:
-        center_idx = np.argmin(np.abs(pos_valid))
-        systemic_v = vel_valid[center_idx]
-
     results = {'systemic_v': systemic_v}
-
+    
     # Not enough data -> return zeros
     if len(pos_valid) < 3:
         results.update({
@@ -324,6 +319,13 @@ def Analyze_Expansion_Signature(position_axis, weighted_velocity, velocity_dispe
             'classification': 0, 'confidence': 0
         })
         return results
+    
+    # If not given, estimate systemic velocity from the point closest to center
+    if systemic_v is None:
+        center_idx = np.argmin(np.abs(pos_valid))
+        systemic_v = vel_valid[center_idx]
+
+    results = {'systemic_v': systemic_v}
 
     # Split into left/right/center subsets
     left_mask = pos_valid <= 0

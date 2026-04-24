@@ -1,11 +1,47 @@
 import time
 import numpy as np
 import astropy.io.fits as fits
-import astropy.wcs as WCS
 from astropy import units as u
-from astropy.table import Table
-from skimage import filters, measure, morphology
+from skimage import measure
 from scipy.spatial.distance import cdist
+from pathlib import Path
+
+
+def Save_Fits(data, data_header, file_name_save, overwrite=True, checksum=True):
+    """
+    Save numpy-like image data and FITS header to a FITS file.
+
+    Parameters
+    ----------
+    data : array-like
+        Image data to save.
+    data_header : astropy.io.fits.Header or None
+        FITS header. A copy will be used to avoid side effects.
+    file_name : str or Path
+        Output FITS file path.
+    overwrite : bool, optional
+        Whether to overwrite existing file.
+    checksum : bool, optional
+        Whether to add CHECKSUM and DATASUM keywords.
+    """
+    if data is None:
+        raise ValueError("`data` cannot be None.")
+
+    data = np.asarray(data)
+    file_name_save = Path(file_name_save)
+
+    if data_header is None:
+        header = fits.Header()
+    elif isinstance(data_header, fits.Header):
+        header = data_header.copy()
+    else:
+        raise TypeError("`data_header` must be an astropy.io.fits.Header or None.")
+
+    # Construct HDU directly with data and header
+    hdu = fits.PrimaryHDU(data=data, header=header)
+
+    # Write to disk
+    hdu.writeto(file_name_save,overwrite=overwrite,checksum=checksum,output_verify="silentfix")
 
 
 def Translate_Coords_LBV(coords_LBV, data_wcs, pix2world=False, world2pix=False):
@@ -269,7 +305,7 @@ def Generate_Ellipse_Points(a_res, b_res, alpha_res, center=None):
     ellipse_perimeter = 2 * np.pi * np.sqrt((a_res**2 + b_res**2) / 2)
 
     # Choose number of samples proportional to perimeter length
-    num_points = int(ellipse_perimeter)
+    num_points = np.min([int(ellipse_perimeter),1000])
     theta_res = np.linspace(0.0, 2 * np.pi, num_points)
 
     # Parametric ellipse with rotation

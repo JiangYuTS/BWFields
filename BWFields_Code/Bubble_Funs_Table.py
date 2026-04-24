@@ -161,7 +161,7 @@ def Table_Interface_Pix(bubble_infor):
     return Bubble_Table_Pix
 
 
-def Table_Interface_WCS(bubbleObj, index_id=None):
+def Table_Interface_WCS(bubbleObj, bub_ids=None):
     """
     Build an Astropy Table of bubble parameters in WCS/world coordinates.
 
@@ -186,7 +186,7 @@ def Table_Interface_WCS(bubbleObj, index_id=None):
           - skeleton_ellipse_angle_abs  (angle + ellipse radii)
           - exp_maxs
           - bub_weights
-    index_id : array-like or None
+    bub_ids : array-like or None
         Optional explicit ID list. If None, uses bubble_used_ids + 1.
 
     Returns
@@ -194,7 +194,9 @@ def Table_Interface_WCS(bubbleObj, index_id=None):
     Bubble_Table_WCS : astropy.table.Table
         Table with standardized columns, units, and formatting.
     """
-    bubble_used_ids = bubbleObj.bubble_used_ids
+    bubble_used_ids = bub_ids
+    if bub_ids is None:
+        bubble_used_ids = bubbleObj.bubble_used_ids
 
     # Bubble center in WCS (galactic lon/lat + velocity)
     CenL = list(np.array(bubbleObj.bubble_coms_wcs)[:, 0][bubble_used_ids])
@@ -227,25 +229,24 @@ def Table_Interface_WCS(bubbleObj, index_id=None):
     
     Confidence = np.array(bubbleObj.bub_weights)[bubble_used_ids]
 
-    # Default IDs: 1-based indexing consistent with pixel table
-    if index_id is None:
-        index_id = np.array(bubble_used_ids) + 1
+    MWISP_ids = []
+    for bubble_used_id in bubble_used_ids:
+        MWISP_ids.append("MWISP{:05}".format(bubble_used_id+1))
 
-    
     # Stack outputs and transpose into row format
-    d_outcat = np.hstack([[index_id, CenL, CenB, CenV,
+    d_outcat = np.hstack([[MWISP_ids, CenL, CenB, CenV,
                            CenSEL, CenSEB, CenSEV,
                            VLow, VUp,
                            Angle, Radius_A, Radius_B, Width, 
                            Exp_maxs, Ssyms, Sexps, Confidence]]).T
 
-    columns = ['ID', 'GLon', 'GLat', 'VLSR', 'GLonSE', 'GLatSE', 'SysV',
+    columns = ['MBID', 'GLon', 'GLat', 'VLSR', 'GLonSE', 'GLatSE', 'SysV',
                'VLow', 'VUp', 'Angle', 'RA', 'RB', 'Width', 'ExpV', 'Ssym', 'Sexp', 'Conf']
 
     units = [None, 'deg', 'deg', 'km/s', 'deg', 'deg', 'km/s',
              'km/s', 'km/s', None, 'arcmin', 'arcmin', 'arcmin', 'km/s', None, None, None]
 
-    dtype = ['int', 'float32', 'float32', 'float32',
+    dtype = ['str', 'float32', 'float32', 'float32',
              'float32', 'float32', 'float32',
              'float32', 'float32',
              'float16', 'float16', 'float16', 'float16',
@@ -261,5 +262,7 @@ def Table_Interface_WCS(bubbleObj, index_id=None):
             Bubble_Table_WCS[columns[i]].info.format = '.2f'
 
     return Bubble_Table_WCS
+
+
 
 
