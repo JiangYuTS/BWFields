@@ -82,7 +82,7 @@ def Bubble_Detect_Determine_By_MorProVel_Table(bubbleObj, bub_ids=None, bubble_i
         bub_ids = np.arange(len(bubble_coms))
         
     for index in bub_ids:
-        print('Index:', index + 1)
+        print('Index:', index)
         add_con = add_cons[0]
         dictionary_cuts = defaultdict(list)
         

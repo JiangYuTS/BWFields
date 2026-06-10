@@ -660,7 +660,7 @@ def Fit_Double_Gaussian(bubbleObj, ref_ellipse='cavity',
 
         # Fall back to the full profile if the local region is too small
         # or does not preserve both sides of the double-peak structure
-        if len(x) < 7 or len(np.where(x < 0)[0]) < 4 or len(np.where(x > 0)[0]) < 4:
+        if len(x) < 7 or len(np.where(x < 0)[0]) < 3 or len(np.where(x > 0)[0]) < 3:
             print(f"Warning: Only {len(x)} points above threshold or no double peaks. Using full dataset.")
             x, y = x_full, y_full
             local_fit = False

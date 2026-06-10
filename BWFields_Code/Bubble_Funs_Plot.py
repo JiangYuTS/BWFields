@@ -13,6 +13,8 @@ from . import Bubble_Funs_Table as BFT
 from . import Bubble_Funs_Profile as BFPr
 from . import Bubble_Funs_Skeleton as BFS
 from . import Bubble_Funs_Tools as BFTools
+from . import MeerKAT_Code as MKCode
+from . import Spitzer_Code as SpCode
 
 
 def Distinct_Dark_Colors(n, s_range=(0.5, 0.9), v_range=(0.5, 0.9), shuffle=False):
@@ -33,14 +35,38 @@ def Distinct_Dark_Colors(n, s_range=(0.5, 0.9), v_range=(0.5, 0.9), shuffle=Fals
     return np.array(out)
 
 
-def Plot_Images_2D(origin_data_2D,figsize=(6,6),fontsize=12,title='Integrated Image'):
-    fig,(ax0)= plt.subplots(1,1, figsize=figsize)
+def Plot_Images_2D(origin_data_2D,ax0=None,figsize=(6,6),data_wcs=None,tick_logic=True,fontsize=12,title='Integrated Image'):
+    if ax0 is None and tick_logic and data_wcs is not None:
+        fig = plt.figure(figsize=figsize)
+        ax0 = fig.add_subplot(111,projection=data_wcs.celestial)
+    elif ax0 is None and not tick_logic:
+        fig, (ax0) = plt.subplots(1,1,figsize=figsize)
+        ax0.set_xticks([]), ax0.set_yticks([])
+    else:
+        fig, (ax0) = plt.subplots(1,1,figsize=figsize)
+    if tick_logic:
+        plt.rcParams['xtick.direction'] = 'in'
+        plt.rcParams['ytick.direction'] = 'in'
+        plt.rcParams['xtick.color'] = 'green'
+        plt.rcParams['ytick.color'] = 'green'
+        ax0.set_xlabel("Galactic Longitude",fontsize=fontsize)
+        ax0.set_ylabel("Galactic Latitude",fontsize=fontsize)
+        ax0.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
+        ax0.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
+        lon = ax0.coords[0]
+        lat = ax0.coords[1]
+        lon.set_major_formatter("d.d")
+        lat.set_major_formatter("d.d")
+        ax0.tick_params(axis='both', which='major', labelsize=fontsize)
     
     ax0.set_title('{}'.format(title),fontsize=fontsize,color='r')
     plt.xlabel("Galactic Longitude", fontsize=fontsize)
     plt.ylabel("Galactic Latitude", fontsize=fontsize)
     ax0.tick_params(axis='both', which='major', labelsize=fontsize)
     gci = ax0.imshow(origin_data_2D)
+    ax0.contourf(origin_data_2D,
+                 levels=[0., .1],
+                 colors='w')
     
     ax0.invert_yaxis()
     cbar = plt.colorbar(gci,pad=0)
@@ -102,15 +128,13 @@ def Plot_Clumps_Infor_By_Ids(clumpsObj,clump_ids,ax0=None,figsize=(16,14),plot_c
     connected_ids_dict = clumpsObj.connected_ids_dict
     clump_coords_dict = clumpsObj.clump_coords_dict
     
-    filament_coords, filament_item, data_wcs_item, regions_data_T, start_coords, \
-                 filament_item_mask_2D, lb_area = FCFA.Filament_Coords(origin_data, \
+    clump_coords, clump_items, data_wcs_item, regions_data_T, start_coords, \
+                 clump_items_mask_2D, lb_area = FCFA.Filament_Coords(origin_data, \
                  regions_data, data_wcs, clump_coords_dict, clump_ids, CalSub=False)
 
     if ax0 is None and tick_logic:
         fig = plt.figure(figsize=figsize)
         ax0 = fig.add_subplot(111,projection=data_wcs_item.celestial)
-    elif ax0 is None and tick_logic:
-        fig, (ax0) = plt.subplots(1,1,figsize=figsize)
     elif ax0 is None and not tick_logic:
         fig, (ax0) = plt.subplots(1,1,figsize=figsize)
         ax0.set_xticks([]), ax0.set_yticks([])
@@ -146,10 +170,10 @@ def Plot_Clumps_Infor_By_Ids(clumpsObj,clump_ids,ax0=None,figsize=(16,14),plot_c
                 ax0.text(center_y,center_x,"{}".format(index),color=colors[k],fontsize=fontsize-2)
             k += 1
             if plot_contour:
-                _, _, contour_i, _ = BFM.Cal_2D_Region_From_3D_Coords(clump_coords_dict[index],cal_contours=True)
+                _, _, _, contour_i, _ = BFM.Cal_2D_Region_From_3D_Coords(clump_coords_dict[index],cal_contours=True)
                 ax0.plot(contour_i[:,1]-start_coords[2],contour_i[:,0]-start_coords[1],linewidth=linewidth-0.5)
             
-    show_data = filament_item.sum(0) * clumpsObj.delta_v
+    show_data = clump_items.sum(0) * clumpsObj.delta_v
     vmin = np.min(show_data[show_data != 0])
     vmax = np.nanpercentile(show_data[np.where(show_data != 0)], 99.5)
     gci = ax0.imshow(show_data,
@@ -166,7 +190,7 @@ def Plot_Clumps_Infor_By_Ids(clumpsObj,clump_ids,ax0=None,figsize=(16,14),plot_c
         cbar.ax.tick_params(labelsize=fontsize) 
         cbar.set_label(label='K km s$^{-1}$',fontsize=fontsize) 
         
-    return filament_item,start_coords,ax0
+    return clump_items,start_coords,ax0
 
 
 def Plot_Bubble_Inner_Contours(bubbleObj,bg_data=1,clump_ids=None,bubble_valid_ids=None,plot_contour=True,num_text=True,\
@@ -375,9 +399,9 @@ def Plot_Bubble_Gas_Region(bubbleObj,add_con=False,plot_clump=False,plot_contour
     
 
 def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices=9,integration_width=None,figsize=(12, 11),
-    cmap='viridis',vmin=None,vmax=None,v_label_position='top_right',percentile_value=90,fontsize=16,linewidth=2,add_contours=True,
-    contour_levels=None,contour_colors='black',contour_linewidths=1.5,contour_alpha=0.8,show_ellipse=True,
-    ellipse_color='blue',ellipse_linestyle='--',show_legend=True,cbar_logic=False):
+    cmap='viridis',vmin=None,vmax=None,v_label_position='top_right',percentile_value=90,fontsize=16,linewidth=2,spacing=None,
+    add_contours=True,contour_levels=None,contour_colors='black',contour_linewidths=1.5,contour_alpha=0.8,show_ellipse=True,
+    ellipse_color='blue',ellipse_linestyle='--',show_legend=True,cbar_logic=False,tick_logic=True):
     """
     Plot integrated velocity channel maps in Galactic coordinates
     
@@ -622,24 +646,28 @@ def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices
                         edgecolor='black',
                         linewidth=0.5,
                         alpha=0.85), zorder=5)
-        
-        plt.rcParams['xtick.color'] = 'green'
-        plt.rcParams['ytick.color'] = 'green'
-        ax.coords[0].set_axislabel('Galactic Longitude', fontsize=fontsize)
-        ax.coords[1].set_axislabel('Galactic Latitude', fontsize=fontsize)
-        ax.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
-        ax.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
-        ax.coords[0].set_major_formatter('d.d')
-        ax.coords[1].set_major_formatter('d.d')
-        ax.tick_params(axis='both', which='major', labelsize=fontsize)
-        
+        if tick_logic:
+            plt.rcParams['xtick.color'] = 'green'
+            plt.rcParams['ytick.color'] = 'green'
+            ax.coords[0].set_axislabel('Galactic Longitude', fontsize=fontsize)
+            ax.coords[1].set_axislabel('Galactic Latitude', fontsize=fontsize)
+            ax.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
+            ax.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
+            ax.coords[0].set_major_formatter('d.d')
+            ax.coords[1].set_major_formatter('d.d')
+    
+            if spacing != None:
+                lon.set_ticks(spacing=spacing)
+                lat.set_ticks(spacing=spacing)
+            ax.tick_params(axis='both', which='major', labelsize=fontsize)
+            
         # Only show labels on outer edges
         if row<rows-1 or col>0:#rows - 1:
             ax.coords[0].set_ticklabel_visible(False)
             ax.coords[0].set_axislabel('')
             ax.coords[1].set_ticklabel_visible(False)
             ax.coords[1].set_axislabel('')
-    
+
     # Hide unused subplots
     for i in range(n_actual_slices, rows * cols):
         row = i // cols
@@ -1908,8 +1936,12 @@ def Plot_Unwrapped_Bub_Data(bubbleObj,fontsize=12,ax0=None,figsize=(15,2)):
     fig.tight_layout()
     
     xticks = ax0.get_xticks()
-    xticks = xticks/xticks.max()*360
-    ax0.set_xticklabels(np.int32(np.around(xticks)))
+    xmin, xmax = ax0.get_xlim()
+    idx = (xticks >= xmin) & (xticks <= xmax)
+    vis_tick = xticks[idx]
+    new_label = vis_tick / vis_tick.max() * 360
+    ax0.set_xticks(vis_tick)
+    ax0.set_xticklabels(np.int32(np.around(new_label)))
     
     yticks = ax0.get_yticks()
     yticks_arcmin = (yticks - unwrap_width) * pix_scale_arcmin
@@ -1918,7 +1950,7 @@ def Plot_Unwrapped_Bub_Data(bubbleObj,fontsize=12,ax0=None,figsize=(15,2)):
 
 
 def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, figsize=(14,10), img_name='N19-1',
-                                                            save=True, save_folder='../Images', show=False):
+                                    save=[True,True], save_folder='../Images', show=False,file_name_Maser=None):
     print(img_name)
 
     # ===== 1) Build fig =====
@@ -1945,8 +1977,94 @@ def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, figsize=(14,10), i
              color='red', label="PV Slice",
              linestyle='-', markersize=8., linewidth=1.2, alpha=0.6)
 
+    ax0 = Plot_Maser_Infor(bubbleObj,file_name_Maser,ax0)
+    
     leg0 = ax0.legend(loc='upper right', fontsize=fontsize-2)
-    legend_style = [('green', 1.0), ('lime', 1.0), ('lime', 1.0), ('red', 0.6)]
+    legend_style = [('green', 1.0), ('lime', 1.0), ('lime', 1.0), ('red', 0.6), ('orange', 1.0)]
+    for text, (color, alpha) in zip(leg0.get_texts(), legend_style):
+        text.set_color(color)
+        text.set_alpha(alpha)
+    
+    parts = img_name.split('_')
+    tag = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else img_name
+    ax0.text(0.05, 0.95, f'(a) {tag}', color='black',
+             transform=ax0.transAxes, va='top', fontsize=20)
+    ax0.text(0.05, 0.08, f'(W) {bubbleObj.bub_weights[index]:.2f}', color='black',
+             transform=ax0.transAxes, va='top', fontsize=12)
+    
+    # ===== 3) (b) Intensity Profile =====
+    ax1.tick_params(axis='both', colors='black')
+    ax1 = Plot_Profile_Fit(bubbleObj, ax0=ax1, figsize=(6, 4))
+    ax1.text(0.05, 0.95, '(b)', color='black', transform=ax1.transAxes,
+             va='top', fontsize=20)
+    ax1.legend(loc='upper right', fontsize=fontsize-2)
+
+    # ===== 4) (c) PV Slice =====
+    ax2.tick_params(axis='both', colors='black')
+    BFPV.Cal_Radial_Velocity_Profile(bubbleObj, line_index, width=2)
+
+    Plot_Bubble_PV_Slice(bubbleObj, ax0=ax2, figsize=(6, 4))
+    leg1 = ax2.legend(loc='upper right', fontsize=fontsize-2)
+    legend_style = [('green', 1.0), ('blue', 0.8), ('blue', 0.8)]
+    for text, (color, alpha) in zip(leg1.get_texts(), legend_style):
+        text.set_color(color)
+        text.set_alpha(alpha)
+
+    ax2.text(0.05, 0.95, '(c)', color='black', transform=ax2.transAxes,
+             va='top', fontsize=20)
+
+    # ===== 5) (d) Radial Velocity Profile =====
+    ax3.tick_params(axis='both', colors='black')
+    Plot_Radial_Velocity_Profile_Mean(bubbleObj, ax0=ax3, figsize=(6, 4))
+    ax3.text(0.05, 0.95, '(d)', color='black', transform=ax3.transAxes,
+             va='top', fontsize=20)
+
+    if save[0] and save_folder:
+        save_path_pdf = f"{save_folder}/Combined_Plot_{img_name}.pdf"
+        fig.savefig(save_path_pdf, format='pdf', dpi=500, bbox_inches='tight')
+    if save[1] and save_folder:
+        save_path_png = f"{save_folder}/Combined_Plot_{img_name}.png"
+        fig.savefig(save_path_png, format='png', dpi=500, bbox_inches='tight')
+
+    if show:
+        plt.show()
+    return [ax0,ax1,ax2,ax3]
+
+
+def Plot_Bubble_Flow_Imgs_Add_MK_Sp(bubbleObj, index=None, fontsize=12, figsize=(10,12), img_name='N19-1',
+                                    save=[True,True], save_folder='../Images', show=False, file_name_Maser=None):
+    print(img_name)
+
+    # ===== 1) Build fig =====
+    fig = plt.figure(figsize=figsize, constrained_layout=True)
+    ax0 = fig.add_subplot(3, 2, 1, projection=bubbleObj.data_wcs_item.celestial)
+    ax1 = fig.add_subplot(3, 2, 2)
+    ax2 = fig.add_subplot(3, 2, 3)
+    ax3 = fig.add_subplot(3, 2, 4)
+    ax4 = fig.add_subplot(3, 2, 5,projection=bubbleObj.processor_MK.data_wcs_MK_new.celestial)
+    ax5 = fig.add_subplot(3, 2, 6,projection=bubbleObj.data_wcs_Sp.celestial)
+
+    # ===== 2) (a) Unwrap Bubble (WCS) =====
+    ax0.tick_params(axis='both', colors='green')
+    Plot_Unwrap_Bubble_Infor(
+        bubbleObj,
+        add_con=True, plot_clump=True, plot_ellipse=False, plot_contour=False,
+        plot_circles=[False, False], plot_annotate=False, plot_skeleton=False,
+        plot_skeleton_ellipse=True, tick_logic=True, cbar_logic=True, text_com=True,
+        skeleton_types=['scatter', 'line'], linewidth=1.5, fontsize=12, ax0=ax0, figsize=(6, 4)
+    )
+    line_index = bubbleObj.exp_central_delta_v_arg_max
+    dictionary_cuts_item = copy.deepcopy(bubbleObj.dictionary_cuts)
+    start = dictionary_cuts_item['plot_cuts'][line_index][0]
+    end   = dictionary_cuts_item['plot_cuts'][line_index][1]
+    ax0.plot([start[0], end[0]], [start[1], end[1]],
+             color='red', label="PV Slice",
+             linestyle='-', markersize=8., linewidth=1.2, alpha=0.6)
+    
+    ax0 = Plot_Maser_Infor(bubbleObj,file_name_Maser,ax0)
+
+    leg0 = ax0.legend(loc='upper right', fontsize=fontsize-2)
+    legend_style = [('green', 1.0), ('lime', 1.0), ('lime', 1.0), ('red', 0.6), ('orange', 1.0)]
     for text, (color, alpha) in zip(leg0.get_texts(), legend_style):
         text.set_color(color)
         text.set_alpha(alpha)
@@ -1955,6 +2073,8 @@ def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, figsize=(14,10), i
     tag = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else img_name
     ax0.text(0.05, 0.95, f'(a) {tag}', color='black',
              transform=ax0.transAxes, va='top', fontsize=20)
+    ax0.text(0.05, 0.08, f'(W) {bubbleObj.bub_weights[index]:.2f}', color='black',
+             transform=ax0.transAxes, va='top', fontsize=12)
 
     # ===== 3) (b) Intensity Profile =====
     ax1.tick_params(axis='both', colors='black')
@@ -1983,80 +2103,47 @@ def Plot_Bubble_Flow_Imgs(bubbleObj, index=None, fontsize=12, figsize=(14,10), i
     ax3.text(0.05, 0.95, '(d)', color='black', transform=ax3.transAxes,
              va='top', fontsize=20)
 
-    if save and save_folder:
+    ax4.tick_params(axis='both', colors='black')
+    
+    ax4 = MKCode.Plot_MeerKAT_Infor(bubbleObj, layer_index=0, ax0=ax4, plot_bub=True,
+                             fontsize=12, figsize=(6, 4), linewidth=2)
+    ax4.text(0.05, 0.95, '(e)', color='black', transform=ax4.transAxes,
+             va='top', fontsize=20)
+
+    ax5 = SpCode.Plot_Spitzer_Infor(bubbleObj,ax0=ax5,plot_bub=True,
+                            tick_logic=True,grid_logic=True,spacing=None,overlay_logic=False,figsize=(6,4),fontsize=12)
+    ax5.text(0.05, 0.95, '(f)', color='black', transform=ax5.transAxes,
+             va='top', fontsize=20)
+
+    if save[0] and save_folder:
         save_path_pdf = f"{save_folder}/Combined_Plot_{img_name}.pdf"
-        save_path_png = f"{save_folder}/Combined_Plot_{img_name}.png"
         fig.savefig(save_path_pdf, format='pdf', dpi=500, bbox_inches='tight')
+    if save[1] and save_folder:
+        save_path_png = f"{save_folder}/Combined_Plot_{img_name}.png"
         fig.savefig(save_path_png, format='png', dpi=500, bbox_inches='tight')
 
     if show:
         plt.show()
+    return [ax0,ax1,ax2,ax3,ax4,ax5]
 
-    plt.close(fig)
 
+def Plot_Maser_Infor(bubbleObj,file_name_Maser,ax0):
+    if file_name_Maser is not None:
+        coms_LBV_wcs_maser,coms_LBV_pix_maser,dists_maser,ref_maser =  \
+                                    RFile.Read_File_Funs.Read_File_Maser(file_name_Maser,bubbleObj.data_wcs_item)
+        clump_centers = bubbleObj.clumpsObj.centers[bubbleObj.bubble_clump_ids_con]
+        bubble_gas_item_2 = bubbleObj.bubble_gas_item_2
+        match_ids = KDA.KDA_MWISP_Funs.Match_Infor_By_Region(coms_LBV_pix_maser,bubble_gas_item_2,clump_centers,allow_dist=0)
+        match_ids_survey = np.array(match_ids[0])
 
-def Plot_Bubble_Flow_Imgs_Separate(bubbleObj,index,fontsize=12,img_name='N19-1',save=True,save_folder='../Images',show=False):
+        if len(match_ids_survey) > 1:
+            ax0.scatter(coms_LBV_pix_maser[match_ids_survey[0]][0],coms_LBV_pix_maser[match_ids_survey[0]][1],\
+                               color='orange',marker='x',s=100,label='Maser Location')
+            for match_id_survey in match_ids_survey[1:]:
+                ax0.scatter(coms_LBV_pix_maser[match_id_survey][0],coms_LBV_pix_maser[match_id_survey][1],\
+                               color='orange',marker='x',s=100)
+    return ax0
 
-    print(img_name)
-    plt.rcParams['xtick.color'] = 'black'
-    plt.rcParams['ytick.color'] = 'black'
-    ax0 = BFPl.Plot_Radial_Velocity_Profile_Mean(bubbleObj,figsize=(6,4))
-    ax0.text(0.05, 0.95, '(c)', color='black',transform=ax0.transAxes, verticalalignment='top', fontsize=20)
-    save_path_pdf = save_folder + '/Imgs_PV/Velocity_Profiles_{}.pdf'.format(img_name)
-    save_path_png = save_folder + '/Imgs_PV/Velocity_Profiles_{}.png'.format(img_name)
-    if save_path_pdf != None and save:
-        plt.savefig(save_path_pdf, format='pdf', dpi=500)
-        plt.savefig(save_path_png, format='png', dpi=500)
-    if show:
-        plt.show()
-    
-    line_index = bubbleObj.exp_central_delta_v_arg_max
-    BFPV.Cal_Radial_Velocity_Profile(bubbleObj,line_index,width=2)
-    ax0 = Plot_Bubble_PV_Slice(bubbleObj)
-    # ax0.set_ylim(bubble_gas_lbv_min_2_group[2],bubble_gas_lbv_max_2_group[2])
-    # ax0.axhline(bubble_com_item_wcs_group[2], color='b', linestyle='dashed',alpha=0.5,label='Systemic V of N19 Group')
-
-    legend = ax0.legend(loc='upper right',fontsize=fontsize-2)
-    legend_style = [('green', 1.0),('blue', 0.5)]
-    for text, (color, alpha) in zip(legend.get_texts(), legend_style):
-        text.set_color(color)
-        text.set_alpha(alpha)
-        
-    ax0.text(0.05, 0.95, '(b)', color='black',transform=ax0.transAxes, verticalalignment='top', fontsize=20)
-    save_path_pdf = save_folder + '/Imgs_PV/PV_Slice_{}.pdf'.format(img_name)
-    save_path_png = save_folder + '/Imgs_PV/PV_Slice_{}.png'.format(img_name)
-    if save_path_pdf != None and save:
-        plt.savefig(save_path_pdf, format='pdf', dpi=500)
-        plt.savefig(save_path_png, format='png', dpi=500)
-    if show:
-        plt.show()
-    
-    plt.rcParams['xtick.color'] = 'green'
-    plt.rcParams['ytick.color'] = 'green'
-    ax0 = Plot_Unwrap_Bubble_Infor(bubbleObj,add_con=True,plot_clump=True,plot_ellipse=False,plot_contour=False,\
-                                        plot_circles=[False,False],plot_annotate=False,plot_skeleton=False,plot_skeleton_ellipse=True,\
-                                        tick_logic=True,cbar_logic=True,text_com=True,\
-                                        skeleton_types=['scatter','line'],linewidth=1.5,figsize=(8,6),fontsize=12)
-    dictionary_cuts_item = copy.deepcopy(bubbleObj.dictionary_cuts)
-    start = dictionary_cuts_item['plot_cuts'][line_index][0]
-    end = dictionary_cuts_item['plot_cuts'][line_index][1]
-    ax0.plot([start[0], end[0]], [start[1], end[1]], color='red',label="PV Slice",linestyle='-', markersize=8., \
-             linewidth=1.2, alpha=0.6)
-    legend = ax0.legend(loc='upper right',fontsize=fontsize-2)
-    legend_style = [('green', 1.0),('lime', 1.0),('lime', 1.0),('red', 0.6)]
-    for text, (color, alpha) in zip(legend.get_texts(), legend_style):
-        text.set_color(color)
-        text.set_alpha(alpha)
-
-    ax0.text(0.05, 0.95, r'(a) {}-{}'.format(img_name.split('_')[0],img_name.split('_')[1]), \
-             color='black',transform=ax0.transAxes, verticalalignment='top', fontsize=20)
-    save_path_pdf = save_folder + '/Imgs_Skt/Fited_Skt_{}.pdf'.format(img_name)
-    save_path_png = save_folder + '/Imgs_Skt/Fited_Skt_{}.png'.format(img_name)
-    if save_path_pdf != None and save:
-        plt.savefig(save_path_pdf, format='pdf', dpi=500)
-        plt.savefig(save_path_png, format='png', dpi=500)
-    if show:
-        plt.show()
 
 
 

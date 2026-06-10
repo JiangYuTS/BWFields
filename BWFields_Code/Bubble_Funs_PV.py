@@ -90,7 +90,7 @@ def Cal_Bubble_Center_On_PVPath(bubble_item_pv, pv_path, bubble_center, pix_scal
 
 
 def Extract_Velocity_Profile_From_PV(pv_data, position_axis, velocity_axis,
-    systemic_velocity=None, delta_v=0.0,clip_negative=True, min_weight=0):
+                                     systemic_velocity=None, delta_v=0.0,clip_negative=True, min_weight=0):
     """
     Compute intensity-weighted velocity moments from a PV diagram, and optionally
     separate redshifted/blueshifted components relative to a systemic velocity.
@@ -277,7 +277,7 @@ def Cal_Mean_Profile_PV(position_axis_record, weighted_velocity_record,
 
 
 def Analyze_Expansion_Signature(position_axis, weighted_velocity, velocity_dispersion,
-                               valid_mask, systemic_v=None):
+                                valid_mask, systemic_v=None):
     """
     Analyze expansion-like signatures in a velocity profile across the bubble.
 
@@ -564,8 +564,8 @@ def Calculate_Bubble_Age_Energy(analysis_results, position_range_arcmin, distanc
 
 
 def Analyze_Mean_PV_Profile(weighted_velocity_mean, position_axis_mean,
-                           systemic_v, bubble_outer_radius, pix_scale_arcmin,
-                           exp_base='systemic_v'):
+                            systemic_v, bubble_outer_radius, pix_scale_arcmin,
+                            exp_base='systemic_v'):
     """
     Analyze expansion in a *mean* PV velocity profile and fit expansion models.
 
@@ -779,40 +779,46 @@ def Cal_Radial_Velocity_Profile(bubbleObj, line_coords_index=0, width=2, plot_lo
     bubbleObj.expansion_analysis = expansion_analysis
 
 
-def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
+def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4, exp_base='central_v'):
     """
-    Compute velocity profiles for *all* PV cuts, then build a mean profile (black/red/blue),
-    run expansion analyses, and compute significance metrics.
+    Calculate radial velocity profiles from multiple PV cuts and derive the mean expansion profile.
 
-    This is the main multi-cut workflow:
-      - Loop over all lines
-      - Extract PV slice
-      - Extract velocity moments (total/red/blue)
-      - Analyze expansion vs systemic and vs central
-      - Aggregate profiles and compute binned mean profiles
-      - Analyze mean profiles and compute derived metrics (delta, signs, significance)
+    For each PV cut, this function extracts the intensity-weighted velocity profile,
+    separates the red- and blue-shifted components, and estimates the expansion
+    velocity relative to both the systemic velocity and the local central velocity.
+
+    The individual profiles are then combined into mean black/red/blue profiles.
+    These mean profiles are analyzed to obtain representative expansion parameters,
+    asymmetry indicators, environmental velocity dispersion, and expansion
+    significance.
 
     Parameters
     ----------
     bubbleObj : object
-        Must contain the PV cut definitions in bubbleObj.dictionary_cuts['lines_coords']
-        and many fields used in sub-functions.
-    mean_line_num : int
-        Minimum samples per bin when constructing the mean profile.
-    width : int
-        PV slice width (pixels).
+        Bubble object containing PV cut definitions, data cube, WCS information,
+        velocity axis, systemic velocity, and bubble geometry.
+    mean_line_num : int, optional
+        Minimum number of samples required in each bin when building the mean profile.
+    width : int, optional
+        Width of each PV slice in pixels.
+    exp_base : {'central_v', 'systemic_v'}, optional
+        Reference velocity used when summarizing expansion signs.
 
     Side Effects
     ------------
-    Writes many attributes into bubbleObj, including mean profiles, model fits,
-    expansion sign statistics, sigma_env, and significance results.
+    Updates ``bubbleObj`` with individual PV profiles, mean profiles, expansion
+    analyses, model fits, environmental velocity dispersion, and significance
+    measurements.
     """
+
+    # Containers for per-cut PV profiles and derived quantities
     weighted_velocity_record = []
     position_axis_record = []
     intensity_weights_record = []
     velocity_dispersion_record = []
     pv_data_record = []
 
+    # Basic data and geometric information used throughout the PV analysis
     dictionary_cuts = bubbleObj.dictionary_cuts
     bubble_item = bubbleObj.bubble_item
     data_wcs_item = bubbleObj.data_wcs_item
@@ -823,30 +829,36 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
     delta_v = bubbleObj.clumpsObj.delta_v
     velocity_axis = bubbleObj.velocity_axis
 
+    # Store red- and blue-shifted mean profiles for each PV cut
     bubbleObj.red_mean_record, bubbleObj.blue_mean_record = [], []
 
+    # Store expansion measurements relative to different velocity references
     exp_vs_systemic_v = []
     exp_vs_central_v = []
     central_delta_vs = []
 
-    # --- Loop over all PV cuts ---
+    # Calculate velocity profiles for each PV cut
     for line_coords_index in range(len(dictionary_cuts['lines_coords'])):
         line_coords = dictionary_cuts['lines_coords'][line_coords_index]
+
+        # Extract the PV slice along the current cut
         pv_path, bubble_item_pv = Cal_PV_Path(line_coords, bubble_item, data_wcs_item, width)
         pv_data_record.append(bubble_item_pv)
 
+        # Convert PV pixel coordinates to projected distance from the bubble center
         bubble_position_arcmin, position_axis = Cal_Bubble_Center_On_PVPath(
             bubble_item_pv, pv_path, bubble_com_item, pix_scale_arcmin
         )
 
-        # Extract moments + red/blue split
+        # Derive the intensity-weighted velocity, velocity dispersion,
+        # intensity weight, and red/blue components along the PV cut
         weighted_velocity, velocity_dispersion, intensity_weights, red_comp, blue_comp = \
             Extract_Velocity_Profile_From_PV(
                 bubble_item_pv, position_axis, velocity_axis,
                 systemic_velocity=systemic_v, delta_v=delta_v
             )
 
-        # Expansion vs systemic velocity
+        # Estimate expansion using the systemic velocity as the reference
         expansion_analysis, models, best_model_key = Analyze_Mean_PV_Profile(
             weighted_velocity, position_axis, systemic_v,
             bubble_outer_radius, pix_scale_arcmin, exp_base='systemic_v'
@@ -857,7 +869,7 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
         exp_right_max = expansion_analysis['expansion_right_max']
         exp_vs_systemic_v.append([[exp_left, exp_right], [exp_left_max, exp_right_max]])
 
-        # Expansion vs central velocity (auto-estimated)
+        # Estimate expansion using the locally inferred central velocity
         expansion_analysis, models, best_model_key = Analyze_Mean_PV_Profile(
             weighted_velocity, position_axis, systemic_v,
             bubble_outer_radius, pix_scale_arcmin, exp_base='central_v'
@@ -868,11 +880,11 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
         exp_right_max = expansion_analysis['expansion_right_max']
         exp_vs_central_v.append([[exp_left, exp_right], [exp_left_max, exp_right_max]])
 
-        # Central delta-v (closest to x=0 among non-zero samples)
+        # Measure the velocity offset nearest the bubble center
         v_argmin = np.argmin(np.abs(position_axis[weighted_velocity != 0]))
         central_delta_vs.append(weighted_velocity[weighted_velocity != 0][v_argmin] - systemic_v)
 
-        # Record per-cut profiles
+        # Save the per-cut velocity profiles and their red/blue decompositions
         weighted_velocity_record.append(weighted_velocity)
         position_axis_record.append(position_axis)
         intensity_weights_record.append(intensity_weights)
@@ -880,10 +892,10 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
         bubbleObj.red_mean_record.append(red_comp['mean'])
         bubbleObj.blue_mean_record.append(blue_comp['mean'])
 
-    # Choose the cut with the largest |central_delta_v| as a representative
+    # Use the cut with the largest central velocity offset as the representative cut
     exp_central_delta_v_arg_max = np.argmax(np.abs(central_delta_vs))
 
-    # --- Build mean profiles (black/red/blue) ---
+    # Build binned mean profiles for the total, red-shifted, and blue-shifted components
     weighted_velocity_mean, weighted_velocity_mean_std, position_axis_mean, systemic_v = \
         Cal_Mean_Profile_PV(position_axis_record, weighted_velocity_record,
                            systemic_v, mean_line_num=mean_line_num)
@@ -903,7 +915,7 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
                                   weighted_velocity_mean_std_red,
                                   weighted_velocity_mean_std_blue]
 
-    # Analyze mean profiles
+    # Analyze the mean total/red/blue velocity profiles
     expansion_analysis_mean, models_mean, best_model_key_mean = Analyze_Mean_PV_Profile(
         weighted_velocity_means[0], position_axis_mean, systemic_v,
         bubble_outer_radius, pix_scale_arcmin
@@ -917,18 +929,18 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
         bubble_outer_radius, pix_scale_arcmin
     )
 
-    # Compute delta metrics between max and mean expansions
+    # Compare mean and maximum expansion velocities among total/red/blue profiles
     Cal_Expansion_V_Delta(bubbleObj, expansion_analysis_mean,
                           expansion_analysis_mean_red, expansion_analysis_mean_blue)
 
-    # Central velocity from mean profile (closest to x=0 with non-zero)
+    # Estimate the central velocity from the mean profile using the point closest to zero offset
     for i in range(len(position_axis_mean)):
         central_v_mean = weighted_velocity_means[0][np.argsort(np.abs(position_axis_mean))[i]]
         if central_v_mean != 0:
             break
     bubbleObj.central_v_mean = central_v_mean
 
-    # Store outputs
+    # Store per-cut measurements
     bubbleObj.systemic_v = systemic_v
     bubbleObj.exp_vs_systemic_v = np.array(exp_vs_systemic_v)
     bubbleObj.exp_vs_central_v = np.array(exp_vs_central_v)
@@ -939,10 +951,12 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
     bubbleObj.intensity_weights_record = intensity_weights_record
     bubbleObj.velocity_dispersion_record = velocity_dispersion_record
 
+    # Store mean profiles and uncertainties
     bubbleObj.weighted_velocity_means = weighted_velocity_means
     bubbleObj.weighted_velocity_mean_stds = weighted_velocity_mean_stds
     bubbleObj.position_axis_mean = position_axis_mean
 
+    # Store model results for total, red-shifted, and blue-shifted mean profiles
     bubbleObj.expansion_analysis_mean = expansion_analysis_mean
     bubbleObj.models_mean = models_mean
     bubbleObj.best_model_key_mean = best_model_key_mean
@@ -957,8 +971,9 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
 
     bubbleObj.pv_data_record = pv_data_record
 
-    # Expansion sign summary + environmental sigma estimation + significance scores
-    Analyze_Exp_Vs(bubbleObj, exp_base='central_v')
+    # Summarize expansion signs, estimate background velocity dispersion,
+    # and evaluate the statistical significance of the expansion signal
+    Analyze_Exp_Vs(bubbleObj, exp_base=exp_base)
     sigma_env = Estimate_Sigma_Env(bubbleObj, systemic_velocity=bubbleObj.systemic_v)
     exp_results, max_Sexp, max_Sexp_index = Compute_Exp_Significance(bubbleObj, sigma_env=sigma_env)
 
@@ -968,7 +983,7 @@ def Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=6, width=4):
     bubbleObj.max_Sexp_index = max_Sexp_index
 
 
-def Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=1, mean_line_num=4, width=4):
+def Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=1, mean_line_num=4, width=4, exp_base='central_v'):
     """
     Wrapper for computing mean PV profiles under different PV center definitions.
 
@@ -984,17 +999,17 @@ def Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=1, mean_line_num=4, widt
     Updates bubbleObj in-place with chosen results.
     """
     if pv_type == 1:
-        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width)
+        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width, exp_base=exp_base)
         bubbleObj.pv_type = pv_type
 
     elif pv_type == 2:
         bubbleObj.bubble_com_item = bubbleObj.bubble_gas_com_1 - bubbleObj.start_coords
-        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width)
+        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width,exp_base=exp_base)
         bubbleObj.pv_type = pv_type
 
     elif pv_type is None:
         # Try pv_type=1
-        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width)
+        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width, exp_base=exp_base)
         bubbleObj.pv_type = 1
         bubbleObj_pv_type_1 = copy.copy((bubbleObj))
 
@@ -1007,7 +1022,7 @@ def Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=1, mean_line_num=4, widt
 
         # Try pv_type=2
         bubbleObj.bubble_com_item = bubbleObj.bubble_gas_com_1 - bubbleObj.start_coords
-        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width)
+        Cal_Radial_Velocity_Profile_Mean_I(bubbleObj, mean_line_num=mean_line_num, width=width, exp_base=exp_base)
         bubbleObj.pv_type = 2
         bubbleObj_pv_type_2 = copy.copy(bubbleObj)
 
@@ -1026,12 +1041,8 @@ def Cal_Radial_Velocity_Profile_Mean(bubbleObj, pv_type=1, mean_line_num=4, widt
         bubbleObj.__dict__.update(best.__dict__)
 
 
-def Estimate_Sigma_Env_From_Single_PV(
-    pv_data, position_axis, velocity_axis, R_out,
-    systemic_velocity=None, delta_v=0.0,
-    clip_negative=True, min_weight=0.0,
-    use_outer=True, outer_factor=1.5
-):
+def Estimate_Sigma_Env_From_Single_PV(pv_data, position_axis, velocity_axis, R_out,systemic_velocity=None, delta_v=0.0,
+                                      clip_negative=True, min_weight=0.0,use_outer=True, outer_factor=1.5):
     """
     Estimate environmental velocity dispersion (sigma_env) from a single PV slice.
 
@@ -1094,8 +1105,7 @@ def Estimate_Sigma_Env_From_Single_PV(
 
 
 def Estimate_Sigma_Env(bubbleObj, systemic_velocity=None, delta_v=0.0,
-                       clip_negative=True, min_weight=0.0,
-                       use_outer=True, outer_factor=1.5):
+                       clip_negative=True, min_weight=0.0, use_outer=True, outer_factor=1.5):
     """
     Estimate sigma_env for a bubble by aggregating sigma_env estimates from all PV cuts.
 
@@ -1145,8 +1155,7 @@ def Estimate_Sigma_Env(bubbleObj, systemic_velocity=None, delta_v=0.0,
     return sigma_env
 
 
-def Compute_Exp_Significance_For_Line(position_axis, velocity_profile, R_out,
-                                     sigma_env=None, env_factor=1.5):
+def Compute_Exp_Significance_For_Line(position_axis, velocity_profile, R_out, sigma_env=None, env_factor=1.5):
     """
     Compute expansion (V-shaped) significance metrics for a single position–velocity cut.
 

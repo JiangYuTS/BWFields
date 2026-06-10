@@ -7,7 +7,45 @@ from scipy.spatial.distance import cdist
 from pathlib import Path
 
 
-def Save_Fits(data, data_header, file_name_save, overwrite=True, checksum=True):
+# def Save_Fits(data, data_header, file_name_save, overwrite=True, checksum=True):
+#     """
+#     Save numpy-like image data and FITS header to a FITS file.
+
+#     Parameters
+#     ----------
+#     data : array-like
+#         Image data to save.
+#     data_header : astropy.io.fits.Header or None
+#         FITS header. A copy will be used to avoid side effects.
+#     file_name : str or Path
+#         Output FITS file path.
+#     overwrite : bool, optional
+#         Whether to overwrite existing file.
+#     checksum : bool, optional
+#         Whether to add CHECKSUM and DATASUM keywords.
+#     """
+#     if data is None:
+#         raise ValueError("`data` cannot be None.")
+
+#     data = np.asarray(data)
+#     file_name_save = Path(file_name_save)
+
+#     if data_header is None:
+#         header = fits.Header()
+#     elif isinstance(data_header, fits.Header):
+#         header = data_header.copy()
+#     else:
+#         raise TypeError("`data_header` must be an astropy.io.fits.Header or None.")
+
+#     # Construct HDU directly with data and header
+#     hdu = fits.PrimaryHDU(data=data, header=header)
+
+#     # Write to disk
+#     hdu.writeto(file_name_save,overwrite=overwrite,checksum=checksum,output_verify="silentfix")
+
+
+def Save_Fits(data, data_header, file_name_save,
+              dim=None, overwrite=True, checksum=True):
     """
     Save numpy-like image data and FITS header to a FITS file.
 
@@ -23,11 +61,29 @@ def Save_Fits(data, data_header, file_name_save, overwrite=True, checksum=True):
         Whether to overwrite existing file.
     checksum : bool, optional
         Whether to add CHECKSUM and DATASUM keywords.
+    dim : int or None
+        2 = save as 2D FITS
+        3 = save as 3D FITS
+        None = use data.ndim automatically
     """
+
     if data is None:
         raise ValueError("`data` cannot be None.")
 
+    if hasattr(data, "value"):
+        data = data.value
+
     data = np.asarray(data)
+
+    if dim is None:
+        dim = data.ndim
+
+    if dim not in [2, 3]:
+        raise ValueError("`dim` must be 2 or 3.")
+
+    if data.ndim != dim:
+        raise ValueError(f"`data` is {data.ndim}D, but dim={dim}.")
+
     file_name_save = Path(file_name_save)
 
     if data_header is None:
@@ -35,13 +91,37 @@ def Save_Fits(data, data_header, file_name_save, overwrite=True, checksum=True):
     elif isinstance(data_header, fits.Header):
         header = data_header.copy()
     else:
-        raise TypeError("`data_header` must be an astropy.io.fits.Header or None.")
+        raise TypeError("`data_header` must be fits.Header or None.")
 
-    # Construct HDU directly with data and header
+    header["NAXIS"] = dim
+    header["NAXIS1"] = data.shape[-1]
+    header["NAXIS2"] = data.shape[-2]
+
+    if dim == 3:
+        header["NAXIS3"] = data.shape[-3]
+
+    if dim == 2:
+        remove_keys = []
+
+        for key in header.keys():
+            k = key.upper()
+
+            if k in ["NAXIS3", "NAXIS4"]:
+                remove_keys.append(key)
+
+            if k.endswith("3") or k.endswith("4"):
+                remove_keys.append(key)
+
+            if "3_" in k or "_3" in k or "4_" in k or "_4" in k:
+                remove_keys.append(key)
+
+        for key in set(remove_keys):
+            if key in header:
+                del header[key]
+
     hdu = fits.PrimaryHDU(data=data, header=header)
 
-    # Write to disk
-    hdu.writeto(file_name_save,overwrite=overwrite,checksum=checksum,output_verify="silentfix")
+    hdu.writeto(file_name_save, overwrite=overwrite, checksum=checksum, output_verify="silentfix")
 
 
 def Translate_Coords_LBV(coords_LBV, data_wcs, pix2world=False, world2pix=False):
@@ -552,11 +632,37 @@ def Normalize_For_RGB(img, p_lo=1, p_hi=99.5, stretch="asinh"):
     return x
 
 
+def Get_Min_Bounding_Cuboid(clumpsObj,clump_ids):
+    origin_data = clumpsObj.origin_data
+    clump_coords_dict = clumpsObj.clump_coords_dict
+    coords_item = np.array([[0,0,0]])
+    for clump_id in clump_ids:
+        coords_item = np.r_[coords_item,clump_coords_dict[clump_id]]
+    coords_item = coords_item[1:]
+    clump_items_shape = origin_data.shape
+    
+    l_max = np.min([coords_item[:, 2].max() + 3, clump_items_shape[2]])
+    l_min = np.max([0, coords_item[:, 2].min() - 3])
+    b_max = np.min([coords_item[:, 1].max() + 3, clump_items_shape[1]])
+    b_min = np.max([0, coords_item[:, 1].min() - 3])
+    v_max = np.min([coords_item[:, 0].max() + 3, clump_items_shape[0]])
+    v_min = np.max([0, coords_item[:, 0].min() - 3])
+
+    start_l, start_b, start_v  = 2, 2, 2
+    clump_items_mbc = np.zeros([v_max - v_min + start_v*2 + 1, b_max - b_min + start_b*2 + 1, l_max - l_min + start_l*2 + 1])
+    clump_items_mbc[coords_item[:, 0] - v_min + start_v, coords_item[:, 1] - b_min + start_b, coords_item[:, 2] - l_min + start_l] = \
+        origin_data[coords_item[:, 0], coords_item[:, 1], coords_item[:, 2]]
+    
+    start_coords = np.array([v_min - start_v, b_min - start_b, l_min - start_l])
+
+    return clump_items_mbc,start_coords
+    
+
 def Save_Fits(data,data_header,file_name):
-    hdu_sub = fits.PrimaryHDU()
-    hdu_sub.data = data
-    hdu_sub.header = data_header
-    hdu_sub.writeto(file_name, overwrite=True)
+    primary_hdu = fits.PrimaryHDU(data=data, header=data_header)
+    hdul = fits.HDUList([primary_hdu])
+    hdul.writeto(file_name, overwrite=True)
+
 
 
 

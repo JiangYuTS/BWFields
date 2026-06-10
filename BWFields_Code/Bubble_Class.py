@@ -37,7 +37,7 @@ class BubbleInfor(object):
        - Extract sub-cubes, fit ellipse, derive gas/velocity properties
     """
     def __init__(self, clumpsObj=None, parameters=None, save_files=None,
-                 save=False, pix_scale_arcmin=0.5, vel_resolution=0.167,ClumpNum=3):
+                 save=False, pix_scale_arcmin=None, vel_resolution=0.167,ClumpNum=3):
         # External clump object produced by DPConCFil (provides cube, WCS, SRs, clump coords...)
         self.clumpsObj = clumpsObj
         # Bubble detection parameters passed to BFM.Bubble_Weight_Data_Detect_By_SR
@@ -45,10 +45,14 @@ class BubbleInfor(object):
         # Output file paths (e.g. mask fits, tables) used when save=True
         self.save_files = save_files
         self.save = save
-        # Spatial/velocity resolution metadata used downstream (e.g. physical conversions)
-        self.pix_scale_arcmin = pix_scale_arcmin
-        self.vel_resolution = vel_resolution
         self.ClumpNum = ClumpNum
+        # Spatial/velocity resolution metadata used downstream (e.g. physical conversions)
+        self.vel_resolution = vel_resolution
+        if clumpsObj is not None and pix_scale_arcmin is None:
+            pixel_scale = np.abs(clumpsObj.data_wcs.wcs.cdelt[0])
+            pixel_scale = pixel_scale * clumpsObj.data_wcs.wcs.cunit[0]
+            pix_scale_arcmin = pixel_scale.to(u.arcmin).value
+        self.pix_scale_arcmin = pix_scale_arcmin
 
     def Bubble_Morphology(self, srs_ids=None, bubble_weight_data=None, bubble_regions_data=None, 
                           bubbles_coords=None, par_FacetClumps_bub=[False]):

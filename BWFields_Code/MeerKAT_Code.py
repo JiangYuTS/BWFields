@@ -37,29 +37,35 @@ def Cal_Data_Range_LB(data_wcs, data_cube):
         [[l_max, l_min], [b_min, b_max]] in degrees.
         (Kept in this order to match later selection logic.)
     """
-    nv, ny, nx = data_cube.shape
+    if data_cube.ndim == 3:
+        nv, ny, nx = data_cube.shape
+    elif data_cube.ndim == 2:
+        ny, nx = data_cube.shape
+    else:
+        print('Check data_cube.ndim.')
 
     # Pixel coordinates for the 4 spatial corners
     corners = np.array([
         [0, 0],
         [nx - 1, 0],
         [0, ny - 1],
-        [nx - 1, ny - 1]
-    ])
+        [nx - 1, ny - 1]])
 
     # Convert pixel corners to world coordinates.
     # For 3D WCS: (x, y, v)
     # For 4D WCS: (x, y, v, stokes) or similar
-    if data_wcs.naxis == 3:
+    if data_wcs.naxis == 2:
+        sky_coords = data_wcs.pixel_to_world(corners[:, 0], corners[:, 1])
+        galactic_coords = sky_coords.galactic
+    elif data_wcs.naxis == 3:
         sky_coords = data_wcs.pixel_to_world(corners[:, 0], corners[:, 1], 0)
+        galactic_coords = sky_coords[0].galactic
     elif data_wcs.naxis == 4:
         sky_coords = data_wcs.pixel_to_world(corners[:, 0], corners[:, 1], 0, 0)
+        galactic_coords = sky_coords[0].galactic
     else:
         print('Check data_wcs.naxis.')
-
-    # sky_coords may be a tuple-like object; sky_coords[0] is typically the SkyCoord
-    galactic_coords = sky_coords[0].galactic
-
+    
     # Extract l/b bounds (deg)
     l_min = galactic_coords.l.deg.min()
     l_max = galactic_coords.l.deg.max()
@@ -71,7 +77,7 @@ def Cal_Data_Range_LB(data_wcs, data_cube):
     return data_ranges_lb
 
 
-def Read_MeerKAT_Files_All(file_names_folder):
+def Read_MeerKAT_Files_All(file_names_folder,layer=0):
     """
     Scan a folder and collect WCS coverage for all MeerKAT FITS files.
 
@@ -98,7 +104,10 @@ def Read_MeerKAT_Files_All(file_names_folder):
 
             # NOTE: This assumes data structure like data[0].data[0] -> (nv,ny,nx)
             # Depending on FITS, you may need to verify dimension ordering.
-            data_cube = hdul[0].data[0]
+            if layer>=0:
+                data_cube = hdul[0].data[layer]
+            else:
+                data_cube = hdul[0].data
             header = hdul[0].header
 
             # Build WCS and compute (l,b) coverage
@@ -365,18 +374,16 @@ class MeerKATDataProcessor:
         print(f"检测到 {len(sources)} 个源 (阈值: {brightness_threshold} Jy/beam)")
         return sources
 
+    
     def extract_longitude_range(self, lon_min=11.5, lon_max=12.5, lat_min=None, lat_max=None):
         """
-        Crop data by Galactic longitude (and optionally latitude) in WCS space.
-
-        Workflow:
-        - Build full pixel grid (x,y).
-        - Convert each pixel to world coordinates via WCS.
-        - Build mask for requested lon/lat selection.
-        - Find bounding box of selected pixels.
-        - Crop all layers and also crop lon/lat arrays.
-        - Update header (CRPIX shifts + NAXIS sizes) and store as self.new_header.
-
+        Crop data by Galactic longitude (and optionally latitude) in WCS space, 
+        directly converting the (lon, lat) range to pixel coordinates using all_world2pix.
+    
+        Optimized Workflow:
+        1) Convert lon_min, lon_max, lat_min, lat_max directly to pixel coordinates using all_world2pix.
+        2) Crop the data based on these pixel coordinates.
+    
         Parameters
         ----------
         lon_min, lon_max : float
@@ -384,7 +391,7 @@ class MeerKATDataProcessor:
             If lon_min > lon_max, selection wraps around 0 degrees.
         lat_min, lat_max : float or None
             Optional Galactic latitude range.
-
+    
         Returns
         -------
         dict or None
@@ -393,91 +400,57 @@ class MeerKATDataProcessor:
         if self.data is None:
             print("请先加载数据")
             return None
-
-        height, width = self.data.shape[1], self.data.shape[2]
-
-        # Build full pixel coordinate grid
-        x_pixels = np.arange(width)
-        y_pixels = np.arange(height)
-        x_grid, y_grid = np.meshgrid(x_pixels, y_pixels)
-
+    
+        # Create an array for the world coordinates to convert
+        world_coords = np.array([[lon_min, lat_min] if lat_min is not None else [lon_min, None], 
+                                 [lon_max, lat_max] if lat_max is not None else [lon_max, None]])
+    
         try:
-            # Convert pixel grid to world coordinates
-            coords = self.wcs.pixel_to_world(x_grid, y_grid)
-
-            # Prefer Galactic frame if available
-            if hasattr(coords, 'galactic'):
-                gal_coords = coords.galactic
-                gal_lon = gal_coords.l.degree
-                gal_lat = gal_coords.b.degree
-            else:
-                # Fallback: interpret as already in Galactic or RA/Dec-like
-                gal_lon = coords.l.degree if hasattr(coords, 'l') else coords.ra.degree
-                gal_lat = coords.b.degree if hasattr(coords, 'b') else coords.dec.degree
-
-            # Longitude mask (handle 0-degree wrap)
-            if lon_min > lon_max:
-                lon_mask = (gal_lon >= lon_min) | (gal_lon <= lon_max)
-            else:
-                lon_mask = (gal_lon >= lon_min) & (gal_lon <= lon_max)
-
-            # Optional latitude mask
-            if lat_min is not None and lat_max is not None:
-                lat_mask = (gal_lat >= lat_min) & (gal_lat <= lat_max)
-                coord_mask = lon_mask & lat_mask
-            else:
-                coord_mask = lon_mask
-
-            # Find bounding box of selected pixels
-            valid_rows, valid_cols = np.where(coord_mask)
-            if len(valid_rows) == 0:
-                print("指定的坐标范围内没有数据")
-                return None
-
-            row_min, row_max = valid_rows.min(), valid_rows.max()
-            col_min, col_max = valid_cols.min(), valid_cols.max()
-
-            # Crop cube and mask
-            cropped_data = self.data[:, row_min:row_max + 1, col_min:col_max + 1]
-            cropped_mask = coord_mask[row_min:row_max + 1, col_min:col_max + 1]
-
-            # Crop coordinate grids
-            cropped_gal_lon = gal_lon[row_min:row_max + 1, col_min:col_max + 1]
-            cropped_gal_lat = gal_lat[row_min:row_max + 1, col_min:col_max + 1]
-
-            # Build new header consistent with cropped region
+            # Convert world coordinates (lon, lat) to pixel coordinates using all_world2pix
+            pixel_coords = self.wcs.all_world2pix(world_coords, 0)  # 0 indicates we're working with the first plane (2D)
+    
+            # Extract pixel bounds from the result
+            lon_min_pixel, lat_min_pixel = pixel_coords[0]
+            lon_max_pixel, lat_max_pixel = pixel_coords[1]
+    
+            # Calculate pixel bounds
+            row_min = np.max([0,int(np.floor(lat_min_pixel))])
+            row_max = np.min([int(np.ceil(lat_max_pixel)),self.data.shape[1]])
+            col_min = np.min([int(np.floor(lon_min_pixel)),self.data.shape[2]])
+            col_max = np.max([0,int(np.ceil(lon_max_pixel))])
+    
+            # Crop the data based on the pixel coordinates
+            cropped_data = self.data[:, row_min:row_max, col_max:col_min]
+            cropped_mask = (self.data[0, row_min:row_max, col_max:col_min] != 0)
+            
+            # Optional: update header to match the cropped region
             new_header = self.header.copy()
             if 'CRPIX1' in new_header:
-                new_header['CRPIX1'] -= col_min
+                new_header['CRPIX1'] -= col_max
             if 'CRPIX2' in new_header:
                 new_header['CRPIX2'] -= row_min
             new_header['NAXIS1'] = cropped_data.shape[2]
             new_header['NAXIS2'] = cropped_data.shape[1]
             self.new_header = new_header
-
+    
+            # Return cropped data and associated information
             return {
                 'data': cropped_data,
                 'mask': cropped_mask,
-                'gal_lon': cropped_gal_lon,
-                'gal_lat': cropped_gal_lat,
                 'pixel_bounds': {
                     'row_min': row_min, 'row_max': row_max,
                     'col_min': col_min, 'col_max': col_max
                 },
                 'coord_range': {
-                    'lon_min': np.min(cropped_gal_lon[cropped_mask]),
-                    'lon_max': np.max(cropped_gal_lon[cropped_mask]),
-                    'lat_min': np.min(cropped_gal_lat[cropped_mask]),
-                    'lat_max': np.max(cropped_gal_lat[cropped_mask])
+                    'lon_min': lon_min, 'lon_max': lon_max,
+                    'lat_min': lat_min, 'lat_max': lat_max
                 }
             }
-
+    
         except Exception as e:
-            print(f"坐标转换错误: {e}")
-            print("尝试使用像素范围估算...")
-
-            # Fallback: estimate crop bounds using header linear approximation
-            return self._extract_by_pixel_estimation(lon_min, lon_max, lat_min, lat_max)
+            print(f"错误: {e}")
+            return None
+            
 
     def _extract_by_pixel_estimation(self, lon_min, lon_max, lat_min=None, lat_max=None):
         """
@@ -593,7 +566,12 @@ def Add_Bubble_Infor_To_MK(processor, bubbleObj):
 
     # Convert bubble world coord -> MeerKAT cropped pixel
     # all_world2pix signature depends on WCS dimension; here uses 5 args (lon,lat,0,0,0)
-    bubble_com_MK_T = data_wcs_MK_new.all_world2pix(com_wcs[0], com_wcs[1], 0, 0, 0)
+    if data_wcs_MK_new.naxis == 2:
+        bubble_com_MK_T = data_wcs_MK_new.all_world2pix(com_wcs[0], com_wcs[1])
+    elif data_wcs_MK_new.naxis == 3:
+        bubble_com_MK_T = data_wcs_MK_new.all_world2pix(com_wcs[0], com_wcs[1], 0, 0)
+    elif data_wcs_MK_new.naxis == 4:
+        bubble_com_MK_T = data_wcs_MK_new.all_world2pix(com_wcs[0], com_wcs[1], 0, 0, 0)
 
     # Reorder into (row, col) style used later in plotting
     bubble_com_MK = np.array([bubble_com_MK_T[1], bubble_com_MK_T[0]])
@@ -608,13 +586,27 @@ def Add_Bubble_Infor_To_MK(processor, bubbleObj):
     skeleton_coords_ellipse_wsc = np.c_[skeleton_coords_ellipse_wsc_T[0], skeleton_coords_ellipse_wsc_T[1]]
 
     # Convert skeleton world coordinates -> MeerKAT cropped pixel coordinates
-    skeleton_coords_ellipse_MK_T = data_wcs_MK_new.all_world2pix(
-        skeleton_coords_ellipse_wsc[:, 0],
-        skeleton_coords_ellipse_wsc[:, 1],
-        np.array([0] * len(skeleton_coords_ellipse_wsc)),
-        np.array([0] * len(skeleton_coords_ellipse_wsc)),
-        0
-    )
+    if data_wcs_MK_new.naxis == 2:
+        skeleton_coords_ellipse_MK_T = data_wcs_MK_new.all_world2pix(
+            skeleton_coords_ellipse_wsc[:, 0],
+            skeleton_coords_ellipse_wsc[:, 1]
+        )
+    elif data_wcs_MK_new.naxis == 3:
+        skeleton_coords_ellipse_MK_T = data_wcs_MK_new.all_world2pix(
+            skeleton_coords_ellipse_wsc[:, 0],
+            skeleton_coords_ellipse_wsc[:, 1],
+            np.array([0] * len(skeleton_coords_ellipse_wsc)),
+            0
+        )
+    elif data_wcs_MK_new.naxis == 4:
+        skeleton_coords_ellipse_MK_T = data_wcs_MK_new.all_world2pix(
+            skeleton_coords_ellipse_wsc[:, 0],
+            skeleton_coords_ellipse_wsc[:, 1],
+            np.array([0] * len(skeleton_coords_ellipse_wsc)),
+            np.array([0] * len(skeleton_coords_ellipse_wsc)),
+            0
+        )
+        
     skeleton_coords_ellipse_MK = np.c_[skeleton_coords_ellipse_MK_T[1], skeleton_coords_ellipse_MK_T[0]]
 
     # Skeleton center in MeerKAT pixel frame
@@ -687,7 +679,86 @@ def Plot_Origin_Data(file_name, layer_index=0):
     return ax0
 
 
-def Plot_Extracted_Slice(self, cropped_result, layer_index=0, plot_bub=True,
+def Cal_MeerKAT_Infor(bubbleObj, data_ranges_lb_record, file_names, 
+                      bubble_com_item_wcs=None, bubble_item=None, data_wcs_item=None,
+                      Cut_MK=0.2, reduce_range=0.2):
+    """
+    Helper function to compute the (l,b) coverage of a bubble and locate the corresponding MeerKAT cutout.
+
+    Steps:
+    1) Calculate the (l,b) coverage of the bubble's data cube to estimate the region's size.
+    2) Expand this region by a fractional padding (Cut_MK) to define the MeerKAT cutout window.
+    3) Determine which MeerKAT FITS file contains the bubble center (Read_MeerKAT_Files_I).
+    4) Extract the corresponding data slice from the MeerKAT cube (Extract_Slice).
+    5) Project the bubble skeleton geometry into the MeerKAT cutout pixel frame.
+    6) Store the results in the bubble object for later plotting.
+
+    Parameters:
+    ----------
+    bubbleObj : object
+        The bubble object containing information about the bubble center, data WCS, and other relevant fields.
+    data_ranges_lb_record, file_names : list
+        Outputs from Read_MeerKAT_Files_All, used to locate relevant MeerKAT files for the cutout.
+    Cut_MK : float
+        The fractional padding applied to the bubble's (l,b) extent when defining the MeerKAT cutout window.
+    
+    Returns:
+    -------
+    None
+        Updates the `bubbleObj` with the computed cutout and associated processor instance.
+    """
+    
+    # Get bubble WCS and cube data
+    if bubble_com_item_wcs is None:
+        bubble_com_item_wcs = bubbleObj.bubble_com_item_wcs
+    if bubble_item is None:
+        bubble_item = bubbleObj.bubble_item
+    if data_wcs_item is None:
+        data_wcs_item = bubbleObj.data_wcs_item
+
+    # Calculate the (l,b) extent of the bubble's data and apply fractional padding
+    data_ranges_lb = Cal_Data_Range_LB(data_wcs_item, bubble_item)
+    delta_l = np.abs(data_ranges_lb[0][0] - data_ranges_lb[0][1])
+    delta_b = np.abs(data_ranges_lb[1][0] - data_ranges_lb[1][1])
+
+    # Define the extended cutout boundaries based on Cut_MK
+    lon_max = data_ranges_lb[0][0] - delta_l * Cut_MK
+    lon_min = data_ranges_lb[0][1] + delta_l * Cut_MK
+    lat_min = data_ranges_lb[1][0] + delta_b * Cut_MK
+    lat_max = data_ranges_lb[1][1] - delta_b * Cut_MK
+
+    # Bubble center coordinates in (lon, lat)
+    com_wcs = bubble_com_item_wcs[:2]
+
+    # Locate the MeerKAT file that contains the bubble center and the required region
+    file_name, data_wcs, data_cube = Read_MeerKAT_Files_I(
+        com_wcs, data_ranges_lb_record, file_names, reduce_range=reduce_range
+    )
+
+    processor_MK = None
+    cutted_result = None
+    
+    # If a valid file is found, extract the corresponding slice from the MeerKAT cube
+    if file_name is not None:
+        processor_MK, cutted_result = Extract_Slice(
+            file_name, lon_min=lon_min, lon_max=lon_max,
+            lat_min=lat_min, lat_max=lat_max, save_output=False
+        )
+
+        # Add the bubble geometry to the extracted data for visualization
+        Add_Bubble_Infor_To_MK(processor_MK, bubbleObj)
+        has_file = True
+    else:
+        has_file = False
+
+    # Store results in the bubble object for further processing
+    bubbleObj.processor_MK = processor_MK
+    bubbleObj.cutted_result = cutted_result
+    
+    return has_file
+
+
+def Plot_MeerKAT_Infor(bubbleObj, layer_index=0, ax0=None, plot_bub=True,
                          show_galactic_coords=True, colormap='hot', show_beam=False,
                          tick_logic=True, grid_logic=True, spacing=None,
                          fontsize=12, figsize=(8, 6), linewidth=2):
@@ -695,52 +766,66 @@ def Plot_Extracted_Slice(self, cropped_result, layer_index=0, plot_bub=True,
     Plot a cropped MeerKAT slice (one layer) with optional bubble overlays.
 
     Features:
-    - Auto-scale data units (Jy/beam -> mJy/beam -> μJy/beam) based on dynamic range.
-    - WCS plotting with Galactic lon/lat ticks (if tick_logic=True).
-    - Overlay bubble center, skeleton center, and skeleton ellipse curve if plot_bub=True.
-    - Optional beam size indicator based on pixel scale.
+    - Auto-scales data units based on dynamic range (Jy/beam -> mJy/beam -> μJy/beam).
+    - WCS plotting with Galactic Longitude/Latitude ticks and labels (if tick_logic=True).
+    - Optionally overlays bubble center, skeleton center, and skeleton ellipse curve if plot_bub=True.
+    - Optional beam size indicator (approximated based on pixel scale).
 
-    Parameters
+    Parameters:
     ----------
-    self : MeerKATDataProcessor
-        The processor instance holding data_wcs_MK_new and bubble overlay fields.
+    bubbleObj : object
+        The object containing the bubble center WCS, bubble cube, and other relevant fields.
     cropped_result : dict
-        Result from extract_longitude_range().
+        Result from `extract_longitude_range()` containing the cropped data slice.
     layer_index : int
-        Which layer to plot (0 brightness, 1 spectral index, 2.. subbands).
+        The index of the layer to plot (0 for brightness, 1 for spectral index, 2+ for subbands).
     plot_bub : bool
-        Whether to overlay bubble and skeleton geometry.
+        If True, overlays bubble and skeleton geometry.
     show_beam : bool
-        If True, draw an approximate beam circle.
+        If True, draws an approximate beam circle.
     tick_logic, grid_logic : bool
-        Control WCS ticks and coordinate grid.
-    spacing : astropy.units quantity or None
+        Control whether WCS ticks and coordinate grid are displayed.
+    spacing : astropy.units.quantity or None
         Optional tick spacing for WCS axes.
-    """
-    if cropped_result is None:
-        return
+    fontsize : int
+        Font size for axis labels, ticks, and colorbar labels.
+    figsize : tuple
+        Size of the figure for plotting.
+    linewidth : float
+        Line width for plotting the skeleton curve.
 
-    data = cropped_result['data']
+    Returns:
+    -------
+    ax0 : matplotlib.axes.Axes
+        The axis on which the plot was created.
+    """
+    
+    # Extract relevant data from bubble object
+    processor_MK = bubbleObj.processor_MK
+    cutted_result = bubbleObj.cutted_result
+    
+    if cutted_result is None:
+        return ax0
+
+    data = cutted_result['data']
     if layer_index >= data.shape[0]:
         print(f"层索引 {layer_index} 超出范围")
         return
 
     layer_data = data[layer_index]
 
-    fig = plt.figure(figsize=figsize)
-
-    # Use WCS axis if requested; otherwise plain imshow with no ticks
+    # Create the figure and axis if not provided
+    if ax0 is None and tick_logic:
+        fig = plt.figure(figsize=figsize)
+        ax0 = fig.add_subplot(111,projection=processor_MK.data_wcs_MK_new.celestial)
+    elif ax0 is None and not tick_logic:
+        fig, (ax0) = plt.subplots(1,1,figsize=figsize)
+        ax0.set_xticks([]), ax0.set_yticks([])
+        
+    # WCS axis setup for ticks and grid logic
     if tick_logic:
-        ax0 = fig.add_subplot(111, projection=self.data_wcs_MK_new.celestial)
-
-        plt.rcParams['xtick.direction'] = 'in'
-        plt.rcParams['ytick.direction'] = 'in'
-        plt.rcParams['xtick.color'] = 'green'
-        plt.rcParams['ytick.color'] = 'green'
-
-        plt.xlabel("Galactic Longitude", fontsize=fontsize)
-        plt.ylabel("Galactic Latitude", fontsize=fontsize)
-
+        ax0.set_xlabel("Galactic Longitude", fontsize=fontsize)
+        ax0.set_ylabel("Galactic Latitude", fontsize=fontsize)
         ax0.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
         ax0.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
 
@@ -750,24 +835,16 @@ def Plot_Extracted_Slice(self, cropped_result, layer_index=0, plot_bub=True,
         lat.set_major_formatter("d.d")
 
         # Optional custom tick spacing
-        if spacing is not None:
+        if spacing:
             lon.set_ticks(spacing=spacing)
             lat.set_ticks(spacing=spacing)
 
         ax0.tick_params(axis='both', which='major', labelsize=fontsize)
-
-        # Optional coordinate grid
         if grid_logic:
             ax0.coords.grid(alpha=0.5)
 
-    else:
-        ax0 = fig.add_subplot(111)
-        ax0.set_xticks([])
-        ax0.set_yticks([])
-
-    # Decide display scaling and unit label based on amplitude
+    # Scaling and unit selection based on data values
     data_abs_max = max(abs(np.nanmin(layer_data)), abs(np.nanmax(layer_data)))
-
     if layer_index == 0:  # Brightness layer
         if data_abs_max >= 1.0:
             data_display = layer_data
@@ -784,146 +861,46 @@ def Plot_Extracted_Slice(self, cropped_result, layer_index=0, plot_bub=True,
         unit_label = 'Spectral Index'
 
     else:  # Subband layers
-        if data_abs_max >= 0.001:
-            data_display = layer_data * 1000
-            unit_label = 'mJy/beam'
-        else:
-            data_display = layer_data * 1e6
-            unit_label = r'$\mu$Jy/beam'
+        data_display = layer_data * (1000 if data_abs_max >= 0.001 else 1e6)
+        unit_label = 'mJy/beam' if data_abs_max >= 0.001 else r'$\mu$Jy/beam'
 
-    # Robust contrast scaling (avoid extreme outliers)
+    # Contrast scaling
     vmin, vmax = np.nanpercentile(data_display, [1, 99])
     gci = ax0.imshow(data_display, origin='lower', cmap=colormap, vmin=vmin, vmax=vmax)
 
-    # Overlay bubble geometry if present
+    # Bubble and skeleton overlay
     if plot_bub:
-        ax0.scatter(self.bubble_com_MK[1], self.bubble_com_MK[0],
+        ax0.scatter(processor_MK.bubble_com_MK[1], processor_MK.bubble_com_MK[0], 
                     color='green', marker='o', s=40, label="Cavity Com")
-        ax0.scatter(self.skeleton_com_MK[1], self.skeleton_com_MK[0],
-                    color='lime', marker='*', s=40, label="Fited Intensity Center")
-        ax0.plot(self.skeleton_coords_ellipse_MK[:, 1],
-                 self.skeleton_coords_ellipse_MK[:, 0],
-                 linewidth=linewidth, color='lime', linestyle='-.',
-                 label="Fited Intensity Skeleton")
+        ax0.scatter(processor_MK.skeleton_com_MK[1], processor_MK.skeleton_com_MK[0], 
+                    color='lime', marker='*', s=40, label="Fitted Intensity Center")
+        ax0.plot(processor_MK.skeleton_coords_ellipse_MK[:, 1], processor_MK.skeleton_coords_ellipse_MK[:, 0], linewidth=linewidth, 
+                 color='lime', linestyle='-.', label="Fitted Intensity Skeleton")
 
-    # Colorbar with unit label
+    # Colorbar and unit label
     cbar = plt.colorbar(gci, pad=0)
     cbar.ax.tick_params(labelsize=fontsize)
-    cbar.set_label(label=unit_label, fontsize=fontsize)
+    cbar.set_label(unit_label, fontsize=fontsize)
 
-    # Optional: use cropped_result lon/lat arrays for extra annotations (mostly commented)
-    if show_galactic_coords and 'gal_lon' in cropped_result:
-        gal_lon = cropped_result['gal_lon']
-        gal_lat = cropped_result['gal_lat']
+    # Beam size indicator (optional)
+    if show_beam:
+        beam_radius_pixels = max(2, int(20 / self.pixel_scale))
+        circle = plt.Circle((beam_radius_pixels * 1.5, beam_radius_pixels * 1.5), beam_radius_pixels / 2, 
+                            color='lime', fill=False, linewidth=2)
+        ax0.add_patch(circle)
 
-        height, width = layer_data.shape
-        lon_min = np.nanmin(gal_lon)
-        lon_max = np.nanmax(gal_lon)
-        lat_min = np.nanmin(gal_lat)
-        lat_max = np.nanmax(gal_lat)
+    # plt.tight_layout()
 
-        # You already use WCS axes ticks, so this manual tick mapping is not required.
-        # Kept for reference / potential customization.
-        n_ticks = 5
-        x_ticks = np.linspace(0, width - 1, n_ticks)
-        x_coords = np.linspace(lon_max, lon_min, n_ticks)
-
-        y_ticks = np.linspace(0, height - 1, n_ticks)
-        y_coords = np.linspace(lat_min, lat_max, n_ticks)
-
-        # Optional beam indicator (approximate)
-        if show_beam:
-            # Convert ~20 arcsec beam to pixels using pixel_scale (arcsec/pixel)
-            beam_radius_pixels = max(2, int(20 / self.pixel_scale))
-            circle = plt.Circle(
-                (beam_radius_pixels * 1.5, beam_radius_pixels * 1.5),
-                beam_radius_pixels / 2,
-                color='lime', fill=False, linewidth=2
-            )
-            plt.gca().add_patch(circle)
-
-    else:
-        # If not using WCS coords, label as pixel axes
-        plt.xlabel('Pixel X', fontsize=fontsize)
-        plt.ylabel('Pixel Y', fontsize=fontsize)
-
-    plt.tight_layout()
-
+    # Add legend if bubbles are plotted
     if plot_bub:
-        plt.legend(fontsize=fontsize, loc='upper right', labelcolor=['blue', 'lime', 'lime'])
+        ax0.legend(fontsize=fontsize, loc='upper right')
 
     return ax0
 
 
-def Plot_MeerKAT_Infor(bubbleObj, data_ranges_lb_record, file_names, Cut_MK=0.2):
-    """
-    Main helper to locate and plot the MeerKAT cutout around a given bubble.
 
-    Steps:
-    1) Compute (l,b) coverage of the bubble's own data cube to estimate a region size.
-    2) Expand that region by Cut_MK fraction to define a MeerKAT cutout window.
-    3) Find which MeerKAT FITS file contains the bubble center (Read_MeerKAT_Files_I).
-    4) Extract the corresponding slice from MeerKAT data (Extract_Slice).
-    5) Project bubble skeleton geometry into the MeerKAT cutout pixel frame.
-    6) Plot the brightness layer with bubble overlays.
 
-    Parameters
-    ----------
-    bubbleObj : object
-        Must include bubble center WCS, bubble cube, and WCS for that cube.
-    data_ranges_lb_record, file_names
-        Outputs from Read_MeerKAT_Files_All.
-    Cut_MK : float
-        Fractional padding applied to bubble (l,b) extent when defining cutout.
 
-    Returns
-    -------
-    ax0 : matplotlib axis or None
-        Axis handle if plotting succeeds.
-    processor_MK : MeerKATDataProcessor
-        Processor instance (note: file is closed before return in your code).
-    """
-    bubble_com_item_wcs = bubbleObj.bubble_com_item_wcs
-    bubble_item = bubbleObj.bubble_item
-    data_wcs_item = bubbleObj.data_wcs_item
 
-    # Compute bubble data coverage in (l,b) and expand
-    data_ranges_lb = Cal_Data_Range_LB(data_wcs_item, bubble_item)
-    delta_l = np.abs(data_ranges_lb[0][0] - data_ranges_lb[0][1])
-    delta_b = np.abs(data_ranges_lb[1][0] - data_ranges_lb[1][1])
 
-    lon_max = data_ranges_lb[0][0] - delta_l * Cut_MK
-    lon_min = data_ranges_lb[0][1] + delta_l * Cut_MK
-    lat_min = data_ranges_lb[1][0] + delta_b * Cut_MK
-    lat_max = data_ranges_lb[1][1] - delta_b * Cut_MK
 
-    # Bubble center in (lon,lat)
-    com_wcs = bubble_com_item_wcs[:2]
-
-    # Find the MeerKAT file containing the bubble
-    file_name, data_wcs, data_cube = Read_MeerKAT_Files_I(
-        com_wcs, data_ranges_lb_record, file_names, reduce_range=0.1
-    )
-
-    ax0 = None
-    if file_name is not None:
-        # Extract cutout without saving to disk
-        processor_MK, cutted_result = Extract_Slice(
-            file_name, lon_min=lon_min, lon_max=lon_max,
-            lat_min=lat_min, lat_max=lat_max, save_output=False
-        )
-
-        # Attach bubble/skeleton overlay info into processor (MeerKAT pixel frame)
-        Add_Bubble_Infor_To_MK(processor_MK, bubbleObj)
-
-        # Plot brightness layer (layer 0)
-        if cutted_result['data'] is not None:
-            ax0 = Plot_Extracted_Slice(
-                processor_MK, cutted_result, layer_index=0,
-                show_galactic_coords=True, colormap='hot', show_beam=False
-            )
-
-        # Close file handle (processor still returned but hdul closed)
-        processor_MK.close()
-
-    return ax0, processor_MK

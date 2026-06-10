@@ -1459,11 +1459,12 @@ def Clump_Item_By_Coords(real_data, clump_coords):
     z_min, z_max = core_z.min(), core_z.max()
 
     # Cube size (ensure minimum size)
-    length = np.max([x_max - x_min, y_max - y_min, z_max - z_min]) + 5
-    wish_len = 10
-    if length < wish_len:
-        length = wish_len + 5
-
+    length = np.max([x_max - x_min, y_max - y_min, z_max - z_min])
+    if np.int32(length*0.1) % 2 == 0:
+        length += np.int32(length*0.1) + 5
+    else:
+        length += np.int32(length*0.1) + 6
+        
     # Allocate cube
     clump_item = np.zeros([length, length, length])
 
