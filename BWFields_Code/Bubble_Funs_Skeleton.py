@@ -862,7 +862,10 @@ def Get_Bubble_Skeleton_Weighted(bubbleObj, unwrap_radius=None, unwrap_width=Non
         ellipse_x00, ellipse_y00, ellipse_angle, semi_major_0, semi_minor_0 = bubbleObj.ellipse_infor
         semi_major = np.max([bubble_radius,bubble_radius_min])
         semi_minor = np.max([bubble_radius,bubble_radius_min]) * np.abs(semi_minor_0 / semi_major_0)
-        ellipse_angle_rad = np.radians(90 - ellipse_angle)
+        if ellipse_angle == 0:
+            ellipse_angle_rad = 0
+        else:
+            ellipse_angle_rad = np.radians(90 - ellipse_angle)
     else:
         semi_major = np.max([bubble_radius,bubble_radius_min])
         semi_minor = np.max([bubble_radius,bubble_radius_min])

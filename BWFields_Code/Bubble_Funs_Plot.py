@@ -51,24 +51,24 @@ def Plot_Images_2D(origin_data_2D,ax0=None,figsize=(6,6),data_wcs=None,tick_logi
         plt.rcParams['ytick.color'] = 'green'
         ax0.set_xlabel("Galactic Longitude",fontsize=fontsize)
         ax0.set_ylabel("Galactic Latitude",fontsize=fontsize)
-        ax0.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
-        ax0.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
-        lon = ax0.coords[0]
-        lat = ax0.coords[1]
-        lon.set_major_formatter("d.d")
-        lat.set_major_formatter("d.d")
+        if data_wcs is not None:
+            ax0.coords[0].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
+            ax0.coords[1].set_ticklabel(fontproperties={'family': 'DejaVu Sans'})
+            lon = ax0.coords[0]
+            lat = ax0.coords[1]
+            lon.set_major_formatter("d.d")
+            lat.set_major_formatter("d.d")
         ax0.tick_params(axis='both', which='major', labelsize=fontsize)
     
     ax0.set_title('{}'.format(title),fontsize=fontsize,color='r')
     plt.xlabel("Galactic Longitude", fontsize=fontsize)
     plt.ylabel("Galactic Latitude", fontsize=fontsize)
     ax0.tick_params(axis='both', which='major', labelsize=fontsize)
-    gci = ax0.imshow(origin_data_2D)
+    gci = ax0.imshow(origin_data_2D,origin='lower')
     ax0.contourf(origin_data_2D,
                  levels=[0., .1],
                  colors='w')
     
-    ax0.invert_yaxis()
     cbar = plt.colorbar(gci,pad=0)
     return ax0
 
@@ -497,7 +497,7 @@ def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices
         if velocity_range is None:
             velocity_range = (0, 10)
         velocities = np.linspace(velocity_range[0], velocity_range[1], nv)
-    
+
     # Calculate velocity channel width
     delta_v = np.abs(velocities[1] - velocities[0])
     
@@ -518,11 +518,10 @@ def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices
     n_actual_slices = min(n_slices, nv // n_channels_integrate)
     
     # Distribute channels evenly
-    step = max(1, nv // n_actual_slices)
-    
+    step = max(2, nv / n_actual_slices)
     for i in range(n_actual_slices):
-        start_ch = i * step
-        end_ch = min(start_ch + n_channels_integrate, nv)
+        start_ch = int(np.around(i * step))
+        end_ch = int(np.around(min(start_ch + n_channels_integrate, nv)))
         
         if start_ch >= nv:
             break
@@ -532,7 +531,7 @@ def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices
         
         # Get velocity range for this integration
         v_start = velocities[start_ch]
-        v_end = velocities[min(end_ch-1, nv-1)]
+        v_end = velocities[min(end_ch, nv-1)]
         
         integration_ranges.append((v_start, v_end))
         integrated_data.append(integrated)
@@ -555,9 +554,8 @@ def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices
     # Get ellipse coordinates if available
     if show_ellipse and hasattr(bubbleObj, 'ellipse_coords'):
         ellipse_coords = bubbleObj.ellipse_coords
-        start_coords_gas_item_2 = bubbleObj.start_coords_gas_item_2
-        ellipse_coords_i = np.c_[ellipse_coords[:, 0] - start_coords_gas_item_2[1],
-                                 ellipse_coords[:, 1] - start_coords_gas_item_2[2]]
+        ellipse_coords_i = np.c_[ellipse_coords[:, 0] - start_coords_gas_item[1],
+                                 ellipse_coords[:, 1] - start_coords_gas_item[2]]
     else:
         show_ellipse = False
     
@@ -697,7 +695,7 @@ def Plot_Velocity_Channel_Maps(bubbleObj,gas_type=2,velocity_range=None,n_slices
         cbar = fig.colorbar(im, cax=cbar_ax)
         cbar.set_label('K km s$^{-1}$', fontsize=fontsize-2)
         cbar.ax.tick_params(labelsize=fontsize-4)
-        
+
     return axes
 
 
@@ -1517,8 +1515,8 @@ def Plot_Radial_Velocity_Profile_Mean(bubbleObj, fontsize=12, ax0=None, figsize=
                     ha='center', va='center', color=color_text, bbox=dict(boxstyle='round', facecolor=color_bbox, alpha=0.8),
                     fontsize=fontsize-3)
     _put_box(0.15, 'white','black', 'Mean', 'Max', expansion_analysis_mean)
-    _put_box(0.25, 'black', 'red',  'Mean', 'Max', expansion_analysis_mean_red)
-    _put_box(0.05, 'black', 'blue', 'Mean', 'Max', expansion_analysis_mean_blue)
+    _put_box(0.25, 'white', 'red',  'Mean', 'Max', expansion_analysis_mean_red)
+    _put_box(0.05, 'white', 'blue', 'Mean', 'Max', expansion_analysis_mean_blue)
 
     # ax0.text(0.14, 0.35, f'Com Type={bubbleObj.pv_type}',
     #         transform=ax0.transAxes, ha='center', va='center',
@@ -1536,14 +1534,14 @@ def Plot_Radial_Velocity_Profile_Mean(bubbleObj, fontsize=12, ax0=None, figsize=
         rf"P:${bubbleObj.exp_sign_positive_mean_per:.3g}$, "
         rf"N:${bubbleObj.exp_sign_negative_mean_per:.3g}$, "
         rf"D:${bubbleObj.exp_sign_diff_mean_per:.3g}$",
-        transform=ax0.transAxes, ha='center', va='center',
+        transform=ax0.transAxes, ha='center', va='center', color='white',
         bbox=dict(boxstyle='round', facecolor='green', alpha=0.5),fontsize=fontsize - 3)
 
     colors = ["black", "red", "blue"]
     color_name = colors[bubbleObj.max_Sexp_index]
     ax0.text(0.5, 0.05,
          r'S$_{\rm exp}$' + f'({color_name})={bubbleObj.max_Sexp:.2f}',
-         transform=ax0.transAxes, ha='center', va='center',
+         transform=ax0.transAxes, ha='center', va='center', color='white',
          bbox=dict(boxstyle='round', facecolor='green', alpha=0.5),
          fontsize=fontsize-3)
 

@@ -2037,7 +2037,7 @@ def Cal_Bub_Weights(bubbleObj, type='mean'):
     bubbleObj.bub_weights = bub_weights
 
 
-def Resort_Ellipse_Coords(bubbleObj,add_con=False,ellipse_start_type='max'):
+def Resort_Ellipse_Coords(bubbleObj,add_con=False,ellipse_start_type='max',scoords_logic=False):
     """
     Reorder ellipse contour coordinates so that the "starting point" is placed
     at a location with maximal or minimal nearby gas intensity, or is original coordinates.
@@ -2091,7 +2091,7 @@ def Resort_Ellipse_Coords(bubbleObj,add_con=False,ellipse_start_type='max'):
     else:
         ellipse_coords_updated = ellipse_coords_gas
     bubbleObj.ellipse_coords = ellipse_coords_updated
-
+    
 
 def Get_Bubble_Inner_Item(bubble_regions_data, coords):
     """

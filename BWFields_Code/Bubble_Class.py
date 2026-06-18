@@ -292,6 +292,7 @@ class BubbleInfor(object):
         bubble_coms_wcs = self.bubble_coms_wcs
         bubble_regions = self.bubble_regions
         self.index = index
+        self.add_con = add_con
     
         # If no external bubble info is provided: use region coords to extract bubble inner data
         if bubble_infor_provided is None:
@@ -319,7 +320,7 @@ class BubbleInfor(object):
             self.bubble_com_item_wcs = bubble_coms_wcs[index]
             self.bubble_contour = self.contours[index]
         else:
-            bubble_com_pi, bubble_com_wcs_pi, _, \
+            bubble_com_pi, bubble_com_wcs_pi, bubble_radius_pi, \
             ellipse_coords, ellipse_infor = \
                 BFM.Get_Bubble_Ellipse_Infor_By_Provide(
                     self, bubble_infor_provided)
@@ -327,6 +328,7 @@ class BubbleInfor(object):
             self.bubble_com_item = bubble_com_pi
             self.bubble_com_item_wcs = bubble_com_wcs_pi
             self.bubble_contour = ellipse_coords
+            self.bubble_radius_pi = bubble_radius_pi
     
         self.ellipse_infor = ellipse_infor     # (x0, y0, angle, a, b)
         self.ellipse_coords = ellipse_coords   # ellipse sample points in item coords
@@ -405,6 +407,8 @@ class BubbleInfor(object):
         self.lbv_item_end = lbv_item_end
         self.velocity_axis = velocity_axis
         self.pixel_scale = pixel_scale
+        
+        
                     
 
     def Bubble_Detect(parameters, save_files, file_path):

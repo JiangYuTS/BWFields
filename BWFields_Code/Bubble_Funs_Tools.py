@@ -632,7 +632,7 @@ def Normalize_For_RGB(img, p_lo=1, p_hi=99.5, stretch="asinh"):
     return x
 
 
-def Get_Min_Bounding_Cuboid(clumpsObj,clump_ids):
+def Get_Min_Bounding_Cuboid(clumpsObj,clump_ids,data_wcs=None):
     origin_data = clumpsObj.origin_data
     clump_coords_dict = clumpsObj.clump_coords_dict
     coords_item = np.array([[0,0,0]])
@@ -648,20 +648,28 @@ def Get_Min_Bounding_Cuboid(clumpsObj,clump_ids):
     v_max = np.min([coords_item[:, 0].max() + 3, clump_items_shape[0]])
     v_min = np.max([0, coords_item[:, 0].min() - 3])
 
-    start_l, start_b, start_v  = 2, 2, 2
+    start_l = 2
+    start_b = 2
+    start_v = 2
     clump_items_mbc = np.zeros([v_max - v_min + start_v*2 + 1, b_max - b_min + start_b*2 + 1, l_max - l_min + start_l*2 + 1])
     clump_items_mbc[coords_item[:, 0] - v_min + start_v, coords_item[:, 1] - b_min + start_b, coords_item[:, 2] - l_min + start_l] = \
         origin_data[coords_item[:, 0], coords_item[:, 1], coords_item[:, 2]]
     
     start_coords = np.array([v_min - start_v, b_min - start_b, l_min - start_l])
 
-    return clump_items_mbc,start_coords
-    
+    data_wcs_mbc = clumpsObj.data_wcs.deepcopy()
+    data_wcs_mbc.wcs.crpix[0] -= start_coords[2]  # Adjust reference pixel in longitude
+    data_wcs_mbc.wcs.crpix[1] -= start_coords[1]  # Adjust reference pixel in latitude
+    data_wcs_mbc.wcs.crpix[2] -= start_coords[0]  # Adjust reference pixel in velocity
 
-def Save_Fits(data,data_header,file_name):
-    primary_hdu = fits.PrimaryHDU(data=data, header=data_header)
-    hdul = fits.HDUList([primary_hdu])
-    hdul.writeto(file_name, overwrite=True)
+    return clump_items_mbc, start_coords, data_wcs_mbc
+
+
+# clump_items_mbc, start_coords, data_wcs_mbc = Get_Min_Bounding_Cuboid(clumpsObj,clump_ids)
+# def Save_Fits(data,data_header,file_name):
+#     primary_hdu = fits.PrimaryHDU(data=data, header=data_header)
+#     hdul = fits.HDUList([primary_hdu])
+#     hdul.writeto(file_name, overwrite=True)
 
 
 
